@@ -1,0 +1,19 @@
+{
+  "name": "@acc/adapter-mock",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@acc/adapter-sdk": "workspace:*",
+    "@acc/shared-types": "workspace:*"
+  }
+}
+

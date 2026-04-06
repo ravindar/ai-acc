@@ -1,0 +1,38 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": [
+      "ES2022",
+      "DOM"
+    ],
+    "strict": true,
+    "noEmit": false,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "baseUrl": ".",
+    "paths": {
+      "@acc/shared-types": [
+        "packages/shared-types/src/index.ts"
+      ],
+      "@acc/event-schema": [
+        "packages/event-schema/src/index.ts"
+      ],
+      "@acc/adapter-sdk": [
+        "packages/adapter-sdk/src/index.ts"
+      ],
+      "@acc/adapter-mock": [
+        "packages/adapter-mock/src/index.ts"
+      ],
+      "@acc/ui-kit": [
+        "packages/ui-kit/src/index.ts"
+      ]
+    }
+  }
+}

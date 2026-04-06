@@ -1,0 +1,32 @@
+{
+  "name": "@acc/desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "prepare:standalone": "node scripts/prepare-standalone.mjs",
+    "dev": "vite",
+    "build": "node scripts/prepare-standalone.mjs && tsc -p tsconfig.json && vite build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "tauri": "tauri",
+    "bundle": "tauri build",
+    "bundle:universal": "tauri build --target universal-apple-darwin"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.2.0",
+    "@acc/shared-types": "workspace:*",
+    "@acc/ui-kit": "workspace:*",
+    "@tanstack/react-query": "^5.62.8",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "^5.0.2"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.2.3",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^6.0.7"
+  }
+}

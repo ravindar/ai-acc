@@ -1,0 +1,522 @@
+export type ProviderId = "codex" | "claude" | (string & {});
+
+export type AgentState =
+  | "CREATED"
+  | "STARTING"
+  | "READY"
+  | "RUNNING"
+  | "WAITING_INPUT"
+  | "WAITING_APPROVAL"
+  | "WAITING_DEPENDENCY"
+  | "IDLE"
+  | "COMPLETED"
+  | "ERROR"
+  | "STOPPED";
+
+export type AgentRunState =
+  | "CREATED"
+  | "QUEUED"
+  | "RUNNING"
+  | "WAITING_APPROVAL"
+  | "COMPLETED"
+  | "ERROR"
+  | "STOPPED";
+
+export type TranscriptEntryType = "user" | "assistant" | "tool" | "system" | "error" | "approval";
+export type ToolCallStatus = "requested" | "pending_approval" | "approved" | "denied" | "running" | "completed" | "error";
+export type ApprovalStatus = "PENDING" | "APPROVED" | "DENIED";
+export type HandoffStatus = "OPEN" | "ASSIGNED" | "DONE" | "DISMISSED";
+export type WorktreeStatus = "READY" | "ERROR" | "MISSING";
+
+export interface UsageRollup {
+  totalAgents: number;
+  totalCostUsd: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+}
+
+export interface WorkspaceRecord {
+  id: string;
+  name: string;
+  description: string;
+  projectRoot: string;
+  sharedContext: string;
+  coordinationBrief?: CoordinationBriefRecord | null;
+  layoutConfig: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CoordinationHandoffSummaryRecord {
+  id: string;
+  sourceAgentId: string;
+  sourceRunId: string;
+  assignedAgentId?: string;
+  title: string;
+  summary: string;
+  nextPrompt: string;
+  recommendedProvider: "codex" | "claude";
+  recommendedModel: string;
+  artifactIds: string[];
+  status: HandoffStatus;
+  updatedAt: string;
+}
+
+export type CoordinationFindingSource = "assistant_reply" | "handoff" | "error";
+export type CoordinationFindingType =
+  | "architecture"
+  | "risk"
+  | "decision"
+  | "blocker"
+  | "dependency"
+  | "test"
+  | "handoff"
+  | "implementation"
+  | "general"
+  | "command_request"
+  | "access_request";
+
+export interface CoordinationFindingSummaryRecord {
+  id: string;
+  workspaceId: string;
+  agentId: string;
+  agentTitle: string;
+  runId?: string;
+  source: CoordinationFindingSource;
+  findingType: CoordinationFindingType;
+  title: string;
+  summary: string;
+  detail?: string;
+  updatedAt: string;
+}
+
+export type CoordinationActionRequestKind = "needs_input" | "approval" | "handoff_follow_up";
+
+export interface CoordinationActionRequestRecord {
+  id: string;
+  workspaceId: string;
+  agentId: string;
+  agentTitle: string;
+  runId?: string;
+  approvalId?: string;
+  handoffId?: string;
+  kind: CoordinationActionRequestKind;
+  title: string;
+  summary: string;
+  detail?: string;
+  updatedAt: string;
+}
+
+export type CoordinationDependencyType =
+  | "depends_on_finding"
+  | "depends_on_agent"
+  | "depends_on_handoff"
+  | "depends_on_approval"
+  | "depends_on_user_input";
+
+export type CoordinatorDecisionType =
+  | "run_now"
+  | "wait"
+  | "resume"
+  | "blocked"
+  | "ask_user"
+  | "request_approval";
+
+export interface CoordinationDependencyEdge {
+  id: string;
+  fromAgentId: string;
+  toAgentId: string;
+  dependencyType: CoordinationDependencyType;
+  sourceId: string;
+  reason?: string;
+  resolvedAt?: string;
+  createdAt: string;
+}
+
+export interface CoordinatorDecisionRecord {
+  id: string;
+  workspaceId: string;
+  agentId: string;
+  decision: CoordinatorDecisionType;
+  reason: string;
+  dependencyIds: string[];
+  decidedAt: string;
+}
+
+export interface CoordinationReplyPacketRecord {
+  packetId: string;
+  workspaceId: string;
+  agentId?: string;
+  /** The workspace thread entry ID that triggered this packet. Links packet to a prompt round. */
+  promptId?: string;
+  content: string;
+  renderedAt: string;
+}
+
+export interface CoordinationTeamAskRecord {
+  id: string;
+  workspaceId: string;
+  /** The workspace thread entry ID this ask belongs to. Scopes the ask to one prompt round. */
+  promptId?: string;
+  title: string;
+  summary: string;
+  detail?: string;
+  agentIds: string[];
+  requestIds: string[];
+  findingTypes: CoordinationFindingType[];
+  /** Agents that are dependency-blocked and whose block contributed to this team ask. */
+  blockedBranches?: Array<{
+    agentId: string;
+    agentTitle: string;
+    blockedSince: string;
+    blockedReason: string;
+  }>;
+  /** Suggested reply shape for the operator, derived from the implicated finding types. */
+  recommendedResponseShape?: "approval" | "input" | "direction" | "confirmation";
+  updatedAt: string;
+}
+
+export interface CoordinationAgentBriefRecord {
+  workspaceId: string;
+  agentId: string;
+  title: string;
+  role?: string;
+  executionOrder?: number;
+  provider: ProviderId;
+  model: string;
+  executionRoot: string;
+  matchedRecommendationRole?: string;
+  subscribedFindingTypes: CoordinationFindingType[];
+  subscriptionReasons: Partial<Record<CoordinationFindingType, string>>;
+  summary: string;
+  objective?: string;
+  instructions: string[];
+  coordinationNotes: string[];
+  risks: string[];
+  sharedFindings: string[];
+  pendingActionRequests: string[];
+  relatedHandoffIds: string[];
+  updatedAt: string;
+}
+
+export interface CoordinationStateRecord {
+  workspaceId: string;
+  brief: CoordinationBriefRecord | null;
+  agentBriefs: CoordinationAgentBriefRecord[];
+  handoffSummaries: CoordinationHandoffSummaryRecord[];
+  findingSummaries: CoordinationFindingSummaryRecord[];
+  actionRequests: CoordinationActionRequestRecord[];
+  teamAsk: CoordinationTeamAskRecord | null;
+  updatedAt: string;
+  dependencyGraph: CoordinationDependencyEdge[];
+  executionPlan: Array<{
+    agentId: string;
+    decision: CoordinatorDecisionType;
+    order: number;
+    updatedAt: string;
+  }>;
+  blockedAgents: Array<{
+    agentId: string;
+    reason: string;
+    dependencyId: string;
+  }>;
+  coordinatorDecisions: CoordinatorDecisionRecord[];
+  replyPackets: CoordinationReplyPacketRecord[];
+  teamAskHistory: CoordinationTeamAskRecord[];
+  /** The workspace thread entry ID of the active instruction round. Scopes team asks and reply packets. */
+  currentPromptId: string | null;
+}
+
+export interface RenderedCoordinationPacketRecord {
+  workspaceId: string;
+  agentId?: string;
+  role?: string;
+  title?: string;
+  workspaceContext?: string;
+  targetContext?: string;
+  content: string;
+  updatedAt: string;
+}
+
+export interface AgentUsageRecord {
+  totalCostUsd: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+}
+
+export interface UsageTickRecord extends AgentUsageRecord {
+  id: string;
+  agentId: string;
+  workspaceId: string;
+  latencyMs?: number;
+  metadata: Record<string, unknown>;
+  ts: string;
+}
+
+export interface WorktreeRecord {
+  id: string;
+  workspaceId: string;
+  agentId: string;
+  repoRoot: string;
+  branch: string;
+  path: string;
+  baseRef: string;
+  status: WorktreeStatus;
+  lastValidatedAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentSessionRecord {
+  id: string;
+  workspaceId: string;
+  provider: ProviderId;
+  model: string;
+  title: string;
+  state: AgentState;
+  lastEventAt: string;
+  heartbeatAt: string;
+  usage: AgentUsageRecord;
+  metadata: Record<string, unknown>;
+  worktree?: WorktreeRecord | null;
+}
+
+export interface AgentRunRecord {
+  id: string;
+  workspaceId: string;
+  agentId: string;
+  title: string;
+  prompt: string;
+  state: AgentRunState;
+  createdAt: string;
+  updatedAt: string;
+  startedAt: string;
+  completedAt?: string;
+  errorMessage?: string;
+}
+
+export interface TranscriptEntryRecord {
+  id: string;
+  runId: string;
+  workspaceId: string;
+  agentId: string;
+  seq: number;
+  entryType: TranscriptEntryType;
+  content: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface ToolCallRecord {
+  id: string;
+  runId: string;
+  workspaceId: string;
+  agentId: string;
+  providerCallId?: string;
+  approvalId?: string;
+  toolName: string;
+  status: ToolCallStatus;
+  input: Record<string, unknown>;
+  output?: Record<string, unknown>;
+  requestedCwd?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ApprovalRequestRecord {
+  id: string;
+  runId: string;
+  workspaceId: string;
+  agentId: string;
+  toolCallId: string;
+  status: ApprovalStatus;
+  requestedAction: string;
+  requestedPayload: Record<string, unknown>;
+  reason?: string;
+  decisionMessage?: string;
+  createdAt: string;
+  decidedAt?: string;
+}
+
+export interface HandoffItemRecord {
+  id: string;
+  workspaceId: string;
+  sourceAgentId: string;
+  sourceRunId: string;
+  assignedAgentId?: string;
+  title: string;
+  summary: string;
+  recommendedProvider: "codex" | "claude";
+  recommendedModel: string;
+  nextPrompt: string;
+  artifactIds: string[];
+  status: HandoffStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkspaceOverviewRecord {
+  workspace: WorkspaceRecord;
+  agentsSummary: AgentSessionRecord[];
+  contextsSummary: ContextPackRecord[];
+  usageSummary: UsageRollup;
+  coordinationState?: CoordinationStateRecord | null;
+}
+
+export interface ContextItemRecord {
+  id: string;
+  type: "file" | "url" | "text";
+  value: string;
+  checksum: string;
+  tokenEstimate: number;
+}
+
+export interface ContextPackRecord {
+  id: string;
+  workspaceId: string;
+  name: string;
+  description: string;
+  version: number;
+  immutable: boolean;
+  items: ContextItemRecord[];
+  createdAt: string;
+}
+
+export interface ProjectFileCandidateRecord {
+  path: string;
+  sizeBytes: number;
+  category: "doc" | "manifest" | "config" | "source";
+}
+
+export interface ArtifactRecord {
+  id: string;
+  workspaceId: string;
+  agentId: string;
+  runId?: string;
+  kind: "log" | "file" | "patch" | "trace";
+  uri: string;
+  sizeBytes?: number;
+  createdAt: string;
+}
+
+export type AgentEventType =
+  | "SESSION_STARTED"
+  | "STATUS_CHANGED"
+  | "OUTPUT_DELTA"
+  | "OUTPUT_FINAL"
+  | "TOOL_CALL_STARTED"
+  | "TOOL_CALL_FINISHED"
+  | "HEARTBEAT"
+  | "USAGE_TICK"
+  | "ERROR"
+  | "SESSION_COMPLETED";
+
+export interface SessionStartedPayload {
+  sessionId?: string | null;
+  model?: string | null;
+  scenario?: string | null;
+}
+
+export interface StatusChangedPayload {
+  from: AgentState | null;
+  to: AgentState;
+  reason?: string | null;
+}
+
+export interface OutputPayload {
+  stream: "assistant" | "stdout" | "stderr";
+  text: string;
+}
+
+export interface ToolCallStartedPayload {
+  callId: string;
+  toolName: string;
+  input?: Record<string, unknown>;
+}
+
+export interface ToolCallFinishedPayload {
+  callId: string;
+  toolName: string;
+  success: boolean;
+  output?: Record<string, unknown>;
+}
+
+export interface HeartbeatPayload {
+  status: "alive";
+}
+
+export interface UsageTickPayload {
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  latencyMs?: number | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ErrorPayload {
+  code: string;
+  message: string;
+}
+
+export interface SessionCompletedPayload {
+  outcome: "completed" | "stopped" | "error";
+}
+
+export type AgentEventPayload =
+  | SessionStartedPayload
+  | StatusChangedPayload
+  | OutputPayload
+  | ToolCallStartedPayload
+  | ToolCallFinishedPayload
+  | HeartbeatPayload
+  | UsageTickPayload
+  | ErrorPayload
+  | SessionCompletedPayload;
+
+export interface AgentEventRecord<TPayload = AgentEventPayload> {
+  eventId: string;
+  seq: number;
+  ts: string;
+  workspaceId: string;
+  agentId: string;
+  provider: ProviderId;
+  type: AgentEventType;
+  payload: TPayload;
+}
+
+export interface EventStreamMessage {
+  kind: "agent_event";
+  event: AgentEventRecord;
+}
+
+export interface PlannerAgentRecommendation {
+  role: string;
+  objective: string;
+  provider: "codex" | "claude";
+  model: string;
+  reasoning: string;
+}
+
+export interface TaskPlanningSuggestion {
+  advisorProvider: "codex" | "claude";
+  advisorModel: string;
+  recommendedAgentCount: number;
+  summary: string;
+  coordinationNotes: string[];
+  risks: string[];
+  agents: PlannerAgentRecommendation[];
+  rawResponse?: string;
+}
+
+export interface CoordinationBriefRecord {
+  savedAt: string;
+  source: "planner" | "saved_recommendation" | "manual";
+  task?: string;
+  constraints?: string;
+  advisorProvider?: "codex" | "claude";
+  advisorModel?: string;
+  summary: string;
+  coordinationNotes: string[];
+  risks: string[];
+  agents: PlannerAgentRecommendation[];
+}
