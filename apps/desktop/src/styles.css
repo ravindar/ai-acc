@@ -216,8 +216,8 @@ code {
   padding: 10px;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: rgba(255, 252, 247, 0.98);
-  box-shadow: 0 18px 40px rgba(26, 36, 53, 0.14);
+  background: var(--panel-strong);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.12);
   max-height: min(70vh, 720px);
   overflow: auto;
   pointer-events: auto;
@@ -818,8 +818,8 @@ code {
 
 .selection-card {
   border: 1px solid var(--line);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.92);
+  border-radius: 6px;
+  background: var(--panel-soft);
   padding: 12px 14px;
   display: flex;
   gap: 12px;
@@ -929,8 +929,8 @@ code {
 
 .notice-dismiss {
   border: 1px solid var(--line);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.9);
+  border-radius: 4px;
+  background: var(--panel);
   color: var(--muted);
   padding: 5px 10px;
   cursor: pointer;
@@ -1342,8 +1342,8 @@ code {
 
 .workspace-context-preview-card {
   border: 1px solid var(--line);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.72);
+  border-radius: 6px;
+  background: var(--panel-soft);
   padding: 10px 12px;
   display: grid;
   gap: 6px;
@@ -1412,8 +1412,8 @@ code {
 
 .workspace-team-finding {
   border: 1px solid var(--line);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.6);
+  border-radius: 6px;
+  background: var(--panel-soft);
   padding: 10px 12px;
 }
 
@@ -1488,8 +1488,8 @@ code {
 .thread-table-wrap {
   overflow: auto;
   border: 1px solid var(--line);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.86);
+  border-radius: 6px;
+  background: var(--panel-soft);
 }
 
 .thread-table {
@@ -1902,9 +1902,9 @@ code {
 }
 
 .workspace-inline-action-card {
-  background: rgba(255, 252, 246, 0.94);
+  background: var(--panel-soft);
   border: 1px dashed rgba(240, 188, 114, 0.42);
-  border-radius: 12px;
+  border-radius: 6px;
   padding: 10px 12px;
   max-width: min(760px, 100%);
 }
@@ -1968,8 +1968,8 @@ code {
   gap: 8px;
   padding: 10px 12px;
   border: 1px solid rgba(240, 188, 114, 0.18);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.78);
+  border-radius: 6px;
+  background: var(--panel-soft);
 }
 
 .workspace-team-ask-agent {
@@ -1979,8 +1979,8 @@ code {
   gap: 8px;
   padding: 8px 10px;
   border: 1px solid rgba(240, 188, 114, 0.24);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.72);
+  border-radius: 6px;
+  background: var(--field-soft);
 }
 
 .workspace-team-ask-agent-meta {
@@ -2001,7 +2001,7 @@ code {
 
 .workspace-handoff-card {
   border-style: dashed;
-  background: rgba(255, 252, 246, 0.95);
+  background: var(--panel-soft);
 }
 
 .workspace-prompt-replies {
@@ -2032,8 +2032,8 @@ code {
 .workspace-agent-item {
   width: 100%;
   border: 1px solid var(--line);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.9);
+  border-radius: 6px;
+  background: var(--panel-soft);
   padding: 10px 12px;
   text-align: left;
   display: grid;
@@ -2310,8 +2310,8 @@ code {
   width: 100%;
   text-align: left;
   border: 1px solid var(--line);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.92);
+  border-radius: 6px;
+  background: var(--panel-soft);
   padding: 12px 14px;
   display: grid;
   gap: 8px;
@@ -2432,15 +2432,15 @@ code {
   padding: 9px 10px;
   text-align: left;
   border: 1px solid var(--line);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.94);
+  border-radius: 6px;
+  background: var(--panel-soft);
   cursor: pointer;
 }
 
 .fleet-row:hover,
 .fleet-row-selected {
   border-color: rgba(91, 192, 223, 0.34);
-  background: rgba(239, 248, 255, 0.98);
+  background: rgba(46, 128, 201, 0.08);
 }
 
 .fleet-row-info {
@@ -2861,8 +2861,8 @@ code {
 
 .planner-thread-card {
   border: 1px solid var(--line);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.76);
+  border-radius: 6px;
+  background: var(--panel-soft);
   padding: 12px;
   display: grid;
   gap: 8px;
@@ -2915,8 +2915,8 @@ code {
 
 .planner-history-item {
   border: 1px solid var(--line);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.88);
+  border-radius: 6px;
+  background: var(--panel-soft);
   padding: 12px;
   display: grid;
   gap: 8px;
@@ -2967,8 +2967,8 @@ code {
   padding: 8px;
   border-bottom: 1px solid var(--line);
   background:
-    linear-gradient(180deg, rgba(46, 128, 201, 0.08), rgba(46, 128, 201, 0) 80%),
-    rgba(251, 248, 242, 0.96);
+    linear-gradient(180deg, rgba(46, 128, 201, 0.06), transparent 80%),
+    var(--panel-soft);
 }
 
 .explorer-toolbar .dock-subheader strong {
@@ -3133,7 +3133,7 @@ code {
   border: 1px solid var(--line);
   border-bottom-color: transparent;
   border-radius: 10px 10px 0 0;
-  background: rgba(255, 255, 255, 0.68);
+  background: var(--panel);
   color: var(--muted);
 }
 
@@ -3192,9 +3192,9 @@ code {
   margin: 0;
   min-height: 0;
   overflow: auto;
-  border-radius: 12px;
+  border-radius: 6px;
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.92);
+  background: var(--field);
   padding: 12px;
   font-size: 0.84rem;
   line-height: 1.45;
@@ -3209,9 +3209,9 @@ code {
   min-height: 0;
   height: 100%;
   resize: none;
-  border-radius: 12px;
+  border-radius: 6px;
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.96);
+  background: var(--field);
   color: var(--text);
   padding: 12px;
   font-family: "IBM Plex Mono", monospace;
@@ -3221,7 +3221,7 @@ code {
 
 .file-preview-editor:read-only {
   color: var(--text);
-  background: rgba(248, 251, 253, 0.98);
+  background: var(--field-soft);
 }
 
 .terminal-layout {
@@ -3238,8 +3238,8 @@ code {
 
 .dock-terminal-input {
   border: 1px solid var(--line);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.98);
+  border-radius: 6px;
+  background: var(--field);
   color: var(--text);
   padding: 10px 12px;
   min-width: 0;
@@ -3253,8 +3253,8 @@ code {
 
 .terminal-entry {
   border: 1px solid var(--line);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.94);
+  border-radius: 6px;
+  background: var(--panel-soft);
   padding: 12px;
   display: grid;
   gap: 8px;
@@ -3309,8 +3309,8 @@ code {
 
 .run-card {
   border: 1px solid var(--line);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.94);
+  border-radius: 6px;
+  background: var(--panel-soft);
   padding: 12px;
   display: grid;
   gap: 10px;
