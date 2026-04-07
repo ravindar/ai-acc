@@ -8614,6 +8614,27 @@ export function App() {
                           <span className="compact-note" title={agent.worktree?.path ?? workspaceData?.workspace.projectRoot ?? "workspace root"}>
                             {runLocation}
                           </span>
+                          {(() => {
+                            const tok = agent.usage.totalInputTokens + agent.usage.totalOutputTokens;
+                            if (tok === 0) return null;
+                            const cost = agent.usage.totalCostUsd;
+                            const tokLabel = tok >= 1_000_000
+                              ? `${(tok / 1_000_000).toFixed(1)}M tok`
+                              : tok >= 1_000
+                                ? `${(tok / 1_000).toFixed(1)}k tok`
+                                : `${tok} tok`;
+                            const costLabel = cost > 0
+                              ? ` · $${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)}`
+                              : "";
+                            return (
+                              <span
+                                className="compact-note workspace-usage-pill"
+                                title={`${agent.usage.totalInputTokens.toLocaleString()} in · ${agent.usage.totalOutputTokens.toLocaleString()} out`}
+                              >
+                                {tokLabel}{costLabel}
+                              </span>
+                            );
+                          })()}
                         </div>
                       </div>
                       <div className="settings-actions workspace-agent-item-actions">
