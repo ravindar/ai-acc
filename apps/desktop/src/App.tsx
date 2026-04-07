@@ -8362,7 +8362,7 @@ export function App() {
                                   >
                                     <div className="workspace-team-ask-agent-meta">
                                       <strong>{agentThread.agentTitle}</strong>
-                                      <span>{truncateText(actionRequestCopy.content, 120)}</span>
+                                      <span>{actionRequestCopy.content}</span>
                                     </div>
                                     <button
                                       className="outline-button outline-button-small"

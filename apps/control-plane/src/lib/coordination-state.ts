@@ -104,7 +104,7 @@ function extractActionRequestFromText(value: string | undefined): string | null 
     // Skip markdown decorators and bullet markers — they're not standalone questions.
     if (/^#{1,6}\s/.test(line) || /^[-*•]\s/.test(line) || /^\d+\.\s/.test(line)) continue;
     if (matchesExplicitAsk(line) && line.length > 10) {
-      return truncateText(line, 200);
+      return truncateText(line, 500);
     }
   }
 
@@ -117,7 +117,7 @@ function extractActionRequestFromText(value: string | undefined): string | null 
   for (let i = sentences.length - 1; i >= 0; i--) {
     const sentence = sentences[i]!;
     if (matchesExplicitAsk(sentence) && sentence.length > 10) {
-      return truncateText(sentence, 200);
+      return truncateText(sentence, 500);
     }
   }
 
@@ -141,7 +141,7 @@ function extractLastStatement(value: string | undefined): string | null {
     // If paragraph is mostly bullets, try to grab a leading sentence instead.
     const stripped = para.replace(/^[-*•]\s.*/gm, "").trim();
     const prose = stripped.length > 30 ? stripped : para;
-    if (prose.length > 20) return truncateText(prose, 200);
+    if (prose.length > 20) return truncateText(prose, 500);
   }
   return null;
 }
@@ -844,7 +844,7 @@ async function collectCoordinationSignals(
         summary: heuristicAsk,
         detail:
           latestTranscriptEntry?.content && latestTranscriptEntry.content.trim() !== heuristicAsk
-            ? truncateText(latestTranscriptEntry.content, 400)
+            ? truncateText(latestTranscriptEntry.content, 1200)
             : "The run is paused and waiting for operator guidance.",
         updatedAt: agent.lastEventAt || latestRun?.updatedAt || updatedAt,
       });
