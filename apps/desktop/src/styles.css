@@ -822,6 +822,37 @@ code {
   font-size: 12px;
 }
 
+.workspace-agent-usage-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 12px 8px;
+  border-top: 1px solid var(--line);
+}
+
+.workspace-agent-usage-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.workspace-agent-usage-name {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.workspace-agent-usage-stats {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
 .selection-grid {
   display: grid;
   gap: 12px;

@@ -7527,6 +7527,40 @@ export function App() {
               </button>
             </div>
           </div>
+          {(() => {
+            const agentsWithUsage = agents.filter(
+              (a) => a.usage.totalInputTokens + a.usage.totalOutputTokens > 0,
+            );
+            if (agentsWithUsage.length === 0) return null;
+            return (
+              <div className="workspace-agent-usage-row">
+                {agentsWithUsage
+                  .sort((a, b) => b.usage.totalCostUsd - a.usage.totalCostUsd)
+                  .map((a) => {
+                    const tok = a.usage.totalInputTokens + a.usage.totalOutputTokens;
+                    const cost = a.usage.totalCostUsd;
+                    const tokLabel =
+                      tok >= 1_000_000
+                        ? `${(tok / 1_000_000).toFixed(1)}M`
+                        : `${(tok / 1_000).toFixed(1)}k`;
+                    const costLabel =
+                      cost > 0
+                        ? ` · $${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)}`
+                        : "";
+                    return (
+                      <span
+                        key={a.id}
+                        className="workspace-agent-usage-item"
+                        title={`${a.usage.totalInputTokens.toLocaleString()} in · ${a.usage.totalOutputTokens.toLocaleString()} out`}
+                      >
+                        <span className="workspace-agent-usage-name">{a.title}</span>
+                        <span className="workspace-agent-usage-stats">{tokLabel} tok{costLabel}</span>
+                      </span>
+                    );
+                  })}
+              </div>
+            );
+          })()}
           {workspaceContextExpanded ? (
             <div className="workspace-context-expanded">
               <div className="compact-notices">
