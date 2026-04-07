@@ -842,7 +842,7 @@ code {
   top: calc(100% + 6px);
   right: 0;
   z-index: 200;
-  min-width: 360px;
+  min-width: 480px;
   background: var(--panel-strong);
   border: 1px solid var(--line-strong);
   border-radius: 6px;
@@ -852,7 +852,7 @@ code {
 
 .workspace-usage-dropdown-header {
   display: grid;
-  grid-template-columns: 1fr 140px 72px;
+  grid-template-columns: minmax(0, 1fr) 160px 72px;
   padding: 6px 10px;
   font-size: 10px;
   font-weight: 600;
@@ -864,7 +864,7 @@ code {
 
 .workspace-usage-dropdown-row {
   display: grid;
-  grid-template-columns: 1fr 140px 72px;
+  grid-template-columns: minmax(0, 1fr) 160px 72px;
   padding: 6px 10px;
   font-size: 12px;
   border-bottom: 1px solid var(--line);
@@ -878,10 +878,8 @@ code {
 .workspace-usage-dropdown-name {
   color: var(--text);
   font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   padding-right: 8px;
+  word-break: break-word;
 }
 
 .workspace-usage-dropdown-tokens {
@@ -902,7 +900,7 @@ code {
 
 .workspace-usage-dropdown-total {
   display: grid;
-  grid-template-columns: 1fr 140px 72px;
+  grid-template-columns: minmax(0, 1fr) 160px 72px;
   padding: 6px 10px;
   font-size: 12px;
   font-weight: 600;
