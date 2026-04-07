@@ -21,6 +21,10 @@ import type { WorktreeManager } from "./worktree-manager.js";
 const MAX_TOOL_STEPS = 12;
 const TOOL_EXECUTION_TIMEOUT_MS = 60_000; // 60 seconds
 
+function isRateLimitError(msg: string): boolean {
+  return /429|rate.?limit|tokens per min/i.test(msg);
+}
+
 type LoggerLike = Pick<Console, "error" | "info" | "warn">;
 
 type PendingApprovalContext = {
@@ -493,7 +497,10 @@ export function createRunOrchestrator(
         iteration + 1,
       );
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Run execution failed";
+      const rawMessage = error instanceof Error ? error.message : "Run execution failed";
+      const message = isRateLimitError(rawMessage)
+        ? "API rate limit reached. The provider rejected the request due to token-per-minute limits. Wait a moment and try again."
+        : rawMessage;
       logger.error(error);
       await setRunState(runId, "ERROR", message);
       await coordinationService.onRunCompleted(active.workspaceId, agentId, runId, "error");
@@ -504,7 +511,7 @@ export function createRunOrchestrator(
         agentId,
         entryType: "error",
         content: message,
-        metadata: {},
+        metadata: isRateLimitError(rawMessage) ? { rawError: rawMessage } : {},
         createdAt: new Date().toISOString(),
       });
       activeRuns.delete(runId);

@@ -107,7 +107,7 @@ type WorkspaceThreadEntry = {
   targetAgentIds?: string[];
 };
 
-type WorkspaceConversationReplyKind = "reply" | "error" | "needs_input" | "approval";
+type WorkspaceConversationReplyKind = "reply" | "error" | "rate_limit" | "needs_input" | "approval";
 
 type WorkspaceConversationReply = {
   id: string;
@@ -120,6 +120,7 @@ type WorkspaceConversationReply = {
   streaming?: boolean;
   approval?: ApprovalRequestRecord;
   runId?: string;
+  prompt?: string;
 };
 
 type WorkspaceInlineActionRequest = {
@@ -1390,6 +1391,16 @@ function isNodeMatch(node: FileTreeNodeRecord, searchTerm: string, root: string)
 export function App() {
   const queryClient = useQueryClient();
   const settingsAvailable = isTauriRuntime();
+
+  const [theme, setTheme] = useState<"light" | "dark">(() => {
+    const saved = localStorage.getItem("acc-theme");
+    return saved === "dark" ? "dark" : "light";
+  });
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("acc-theme", theme);
+  }, [theme]);
+
   const commandPaletteInputRef = useRef<HTMLInputElement | null>(null);
   const agentTitleLookupRef = useRef<Map<string, string>>(new Map());
   const previousAgentSnapshotsRef = useRef<Map<string, { state: AgentSessionRecord["state"]; lastEventAt: string; preview: string }>>(
@@ -2112,7 +2123,8 @@ export function App() {
     () => stripPlannerRecommendationBlocks(workspaceData?.workspace.sharedContext ?? ""),
     [workspaceData?.workspace.sharedContext],
   );
-  const isOffline = healthQuery.isError;
+  const isOffline = healthQuery.isError && (healthQuery.failureCount ?? 0) >= 3;
+  const isReconnecting = healthQuery.isError && (healthQuery.failureCount ?? 0) < 3;
   const workspaceHasContent = agents.length > 0 || contexts.length > 0;
   const errorCount = agents.filter((agent) => agent.state === "ERROR").length;
   const idleCount = agents.filter((agent) => agent.state === "IDLE").length;
@@ -2442,14 +2454,16 @@ export function App() {
             }
 
             if (transcriptReplies.length === 0 && run.state === "ERROR" && run.errorMessage) {
+              const isRateLimit = /rate.?limit|429|tokens per min/i.test(run.errorMessage);
               replies.push({
                 id: `workspace-run-error-${run.id}`,
                 agentId,
                 agentTitle: agent.title,
                 ts: run.completedAt || run.updatedAt,
-                kind: "error",
+                kind: isRateLimit ? "rate_limit" : "error",
                 content: run.errorMessage,
                 runId: run.id,
+                prompt: run.prompt,
               });
               if (Date.parse(run.completedAt || run.updatedAt) > Date.parse(latestTs)) {
                 latestTs = run.completedAt || run.updatedAt;
@@ -7924,7 +7938,7 @@ export function App() {
                                           className={`thread-message workspace-reply-bubble ${
                                             reply.kind === "error"
                                               ? "thread-message-danger"
-                                              : reply.kind === "needs_input"
+                                              : reply.kind === "rate_limit" || reply.kind === "needs_input"
                                                 ? "thread-message-warning"
                                                 : "thread-message-assistant"
                                           }`}
@@ -7954,6 +7968,20 @@ export function App() {
                                               type="button"
                                             >
                                               {expanded ? "Show less" : "Show more"}
+                                            </button>
+                                          ) : null}
+                                          {reply.kind === "rate_limit" && reply.prompt ? (
+                                            <button
+                                              className="outline-button outline-button-small"
+                                              onClick={() =>
+                                                void createRunMutation.mutateAsync({
+                                                  agentId: reply.agentId,
+                                                  prompt: reply.prompt!,
+                                                })
+                                              }
+                                              type="button"
+                                            >
+                                              Retry
                                             </button>
                                           ) : null}
                                         </article>
@@ -10103,6 +10131,13 @@ export function App() {
               >
                 Command palette
               </button>
+              <button
+                className="menu-button"
+                onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+                type="button"
+              >
+                {theme === "dark" ? "Light" : "Dark"}
+              </button>
               {activeMenu !== "settings" && homeThread.kind !== "planner" ? (
                 <button
                   className="outline-button"
@@ -10171,9 +10206,13 @@ export function App() {
                 </div>
               </div>
               <div className="topbar-status compact-row">
-                <span className={healthQuery.data?.ok ? "settings-pill settings-pill-active" : "settings-pill"}>
-                  {healthQuery.data?.ok ? "connected" : "offline"}
-                </span>
+                {isReconnecting ? (
+                  <span className="settings-pill">Reconnecting…</span>
+                ) : (
+                  <span className={healthQuery.data?.ok ? "settings-pill settings-pill-active" : "settings-pill"}>
+                    {healthQuery.data?.ok ? "connected" : "offline"}
+                  </span>
+                )}
                 <span className={streamConnected ? "settings-pill settings-pill-active" : "settings-pill"}>
                   {streamConnected ? "stream live" : "polling"}
                 </span>
