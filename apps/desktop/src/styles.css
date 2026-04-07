@@ -810,6 +810,18 @@ code {
   background: rgba(47, 140, 98, 0.12);
 }
 
+.workspace-usage-pill {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
+.workspace-usage-agent-breakdown {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+}
+
 .selection-grid {
   display: grid;
   gap: 12px;

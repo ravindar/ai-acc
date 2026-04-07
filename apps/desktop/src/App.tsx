@@ -7505,6 +7505,19 @@ export function App() {
                 {coordinationFindingCount} finding{coordinationFindingCount === 1 ? "" : "s"} ·{" "}
                 {coordinationActionRequestCount} request{coordinationActionRequestCount === 1 ? "" : "s"}
               </span>
+              {totalTokens > 0 && (
+                <span
+                  className="compact-note workspace-usage-pill"
+                  title={`${(overview?.usageSummary.totalInputTokens ?? 0).toLocaleString()} in · ${(overview?.usageSummary.totalOutputTokens ?? 0).toLocaleString()} out`}
+                >
+                  {totalTokens >= 1_000_000
+                    ? `${(totalTokens / 1_000_000).toFixed(1)}M tok`
+                    : totalTokens >= 1_000
+                      ? `${(totalTokens / 1_000).toFixed(1)}k tok`
+                      : `${totalTokens} tok`}
+                  {totalCost > 0 && ` · $${totalCost < 0.01 ? totalCost.toFixed(4) : totalCost.toFixed(2)}`}
+                </span>
+              )}
               <button
                 className={workspaceContextExpanded ? "chip chip-active" : "chip"}
                 onClick={() => setWorkspaceContextExpanded((current) => !current)}
@@ -7595,6 +7608,52 @@ export function App() {
                   </ul>
                 ) : (
                   <p>No open coordination requests right now.</p>
+                )}
+              </article>
+              <article className="workspace-context-preview-card">
+                <h4>Usage &amp; cost</h4>
+                {totalTokens > 0 ? (
+                  <>
+                    <ul className="workspace-context-list">
+                      <li>
+                        Total tokens:{" "}
+                        <strong>
+                          {(overview?.usageSummary.totalInputTokens ?? 0).toLocaleString()} in ·{" "}
+                          {(overview?.usageSummary.totalOutputTokens ?? 0).toLocaleString()} out
+                        </strong>
+                      </li>
+                      <li>
+                        Estimated cost:{" "}
+                        <strong>
+                          {totalCost < 0.0001
+                            ? "< $0.0001"
+                            : `$${totalCost < 0.01 ? totalCost.toFixed(4) : totalCost.toFixed(2)}`}
+                        </strong>
+                      </li>
+                    </ul>
+                    <ul className="workspace-context-list workspace-usage-agent-breakdown">
+                      {agents
+                        .filter((a) => a.usage.totalInputTokens + a.usage.totalOutputTokens > 0)
+                        .sort((a, b) => b.usage.totalCostUsd - a.usage.totalCostUsd)
+                        .map((a) => {
+                          const agentTokens = a.usage.totalInputTokens + a.usage.totalOutputTokens;
+                          const agentCost = a.usage.totalCostUsd;
+                          return (
+                            <li key={a.id}>
+                              <strong>{a.title}</strong>
+                              {" — "}
+                              {agentTokens >= 1_000
+                                ? `${(agentTokens / 1_000).toFixed(1)}k tok`
+                                : `${agentTokens} tok`}
+                              {agentCost > 0 &&
+                                ` · $${agentCost < 0.01 ? agentCost.toFixed(4) : agentCost.toFixed(2)}`}
+                            </li>
+                          );
+                        })}
+                    </ul>
+                  </>
+                ) : (
+                  <p>No token usage recorded yet. Usage accumulates as agents run.</p>
                 )}
               </article>
               </div>
