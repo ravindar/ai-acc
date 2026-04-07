@@ -41,6 +41,7 @@ export interface WorkspaceRecord {
   description: string;
   projectRoot: string;
   sharedContext: string;
+  sharedContextKv: Record<string, string>;
   coordinationBrief?: CoordinationBriefRecord | null;
   layoutConfig: Record<string, unknown>;
   createdAt: string;
@@ -346,6 +347,7 @@ export interface HandoffItemRecord {
   assignedAgentId?: string;
   title: string;
   summary: string;
+  autoAssign?: boolean;
   recommendedProvider: "codex" | "claude";
   recommendedModel: string;
   nextPrompt: string;
@@ -396,6 +398,30 @@ export interface ArtifactRecord {
   kind: "log" | "file" | "patch" | "trace";
   uri: string;
   sizeBytes?: number;
+  createdAt: string;
+}
+
+export type MemoryScope = "private" | "workspace";
+
+export interface AgentMemoryBlockRecord {
+  id: string;
+  workspaceId: string;
+  agentId: string;
+  key: string;
+  value: string;
+  scope: MemoryScope;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentMessageRecord {
+  id: string;
+  workspaceId: string;
+  fromAgentId: string;
+  toAgentId: string;
+  subject: string;
+  content: string;
+  readAt?: string;
   createdAt: string;
 }
 

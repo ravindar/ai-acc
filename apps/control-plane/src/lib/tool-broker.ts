@@ -32,6 +32,12 @@ const AUTO_APPROVED_TOOLS = new Set([
   "git_diff",
   "run_verification_command",
   "create_handoff",
+  "write_memory",
+  "read_memory",
+  "read_peer_output",
+  "send_agent_message",
+  "mark_message_read",
+  "update_shared_context",
 ]);
 const APPROVAL_REQUIRED_TOOLS = new Set(["write_file", "apply_patch", "run_command"]);
 
@@ -302,8 +308,113 @@ export function createToolBroker(
                 items: { type: "string" },
                 description: "Optional artifact IDs that the next agent should inspect.",
               },
+              autoSpawn: {
+                type: "boolean",
+                description: "If true, automatically create and start a new agent for this handoff.",
+              },
             },
             required: ["title", "summary", "recommendedProvider", "recommendedModel", "nextPrompt"],
+          },
+        },
+        {
+          name: "write_memory",
+          approval: "auto",
+          description: "Write a key-value pair to agent memory (private or workspace-scoped).",
+          argumentsSummary: "{ key, value, scope }",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              key: { type: "string", description: "Memory key (max 128 chars)." },
+              value: { type: "string", description: "Memory value to store." },
+              scope: {
+                type: "string",
+                enum: ["private", "workspace"],
+                description: "private: only this agent can read. workspace: all agents in workspace can read.",
+              },
+            },
+            required: ["key", "value", "scope"],
+          },
+        },
+        {
+          name: "read_memory",
+          approval: "auto",
+          description: "Read memory blocks. Optionally filter by key, scope, or agentId.",
+          argumentsSummary: "{ key?, scope?, agentId? }",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              key: { type: "string", description: "Optional: filter to a specific key." },
+              scope: {
+                type: "string",
+                enum: ["private", "workspace"],
+                description: "Optional: filter by scope.",
+              },
+              agentId: { type: "string", description: "Optional: filter to a specific agent (workspace scope only)." },
+            },
+            required: [],
+          },
+        },
+        {
+          name: "read_peer_output",
+          approval: "auto",
+          description: "Read transcript entries and artifacts from a peer agent's run.",
+          argumentsSummary: "{ agentId, runId?, lastN? }",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              agentId: { type: "string", description: "The peer agent ID to read output from." },
+              runId: { type: "string", description: "Optional: specific run ID. Defaults to the peer's latest run." },
+              lastN: { type: "integer", minimum: 1, maximum: 200, description: "Max transcript entries to return (default 50)." },
+            },
+            required: ["agentId"],
+          },
+        },
+        {
+          name: "send_agent_message",
+          approval: "auto",
+          description: "Send an async message to a peer agent in the same workspace.",
+          argumentsSummary: "{ toAgentId, subject, content }",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              toAgentId: { type: "string", description: "Recipient agent ID." },
+              subject: { type: "string", maxLength: 140, description: "Message subject (max 140 chars)." },
+              content: { type: "string", description: "Message body." },
+            },
+            required: ["toAgentId", "subject", "content"],
+          },
+        },
+        {
+          name: "mark_message_read",
+          approval: "auto",
+          description: "Acknowledge a received agent message as read.",
+          argumentsSummary: "{ messageId }",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              messageId: { type: "string", description: "The message ID to mark as read." },
+            },
+            required: ["messageId"],
+          },
+        },
+        {
+          name: "update_shared_context",
+          approval: "auto",
+          description: "Write a key-value pair to the workspace shared context visible to all agents.",
+          argumentsSummary: "{ key, value }",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              key: { type: "string", maxLength: 128, description: "Context key (max 128 chars)." },
+              value: { type: "string", description: "Context value." },
+            },
+            required: ["key", "value"],
           },
         },
       ];
@@ -646,6 +757,7 @@ export function createToolBroker(
             artifactIds: Array.isArray(input.artifactIds)
               ? input.artifactIds.filter((item): item is string => typeof item === "string")
               : [],
+            autoAssign: input.autoSpawn === true,
             status: "OPEN",
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
@@ -660,6 +772,148 @@ export function createToolBroker(
               title: handoff.title,
               status: handoff.status,
             },
+          };
+        }
+        case "write_memory": {
+          const key = (typeof input.key === "string" ? input.key : "").slice(0, 128);
+          if (!key) throw new Error("write_memory requires a non-empty key.");
+          const scope = input.scope === "workspace" ? "workspace" : "private";
+          const now = new Date().toISOString();
+          const block = await repositories.memory.upsert({
+            id: createId("mem"),
+            workspaceId: context.run.workspaceId,
+            agentId: context.run.agentId,
+            key,
+            value: typeof input.value === "string" ? input.value : String(input.value ?? ""),
+            scope,
+            createdAt: now,
+            updatedAt: now,
+          });
+          return {
+            status: "completed",
+            output: { key: block.key, scope: block.scope, updatedAt: block.updatedAt },
+          };
+        }
+        case "read_memory": {
+          const scopeFilter = input.scope === "private" ? "private" : input.scope === "workspace" ? "workspace" : null;
+          const keyFilter = typeof input.key === "string" ? input.key : null;
+          const agentIdFilter = typeof input.agentId === "string" ? input.agentId : null;
+
+          if (agentIdFilter) {
+            const peerAgent = await repositories.agents.findById(agentIdFilter);
+            if (!peerAgent || peerAgent.workspaceId !== context.run.workspaceId) {
+              throw new Error(`Agent ${agentIdFilter} not found in this workspace.`);
+            }
+          }
+
+          let blocks = await (async () => {
+            if (scopeFilter === "workspace") {
+              const ws = await repositories.memory.listWorkspaceScoped(context.run.workspaceId);
+              return agentIdFilter ? ws.filter((b) => b.agentId === agentIdFilter) : ws;
+            }
+            if (scopeFilter === "private") {
+              return (await repositories.memory.listForAgent(context.run.agentId)).filter((b) => b.scope === "private");
+            }
+            // No scope filter: own private + all workspace-scoped
+            const [ownAll, wsScoped] = await Promise.all([
+              repositories.memory.listForAgent(context.run.agentId),
+              repositories.memory.listWorkspaceScoped(context.run.workspaceId),
+            ]);
+            const seen = new Set<string>();
+            const combined = [];
+            for (const b of [...ownAll, ...wsScoped]) {
+              const dedupeKey = `${b.agentId}:${b.key}`;
+              if (!seen.has(dedupeKey)) { seen.add(dedupeKey); combined.push(b); }
+            }
+            return combined;
+          })();
+
+          if (keyFilter) blocks = blocks.filter((b) => b.key === keyFilter);
+
+          return {
+            status: "completed",
+            output: {
+              blocks: blocks.map((b) => ({ key: b.key, value: b.value, scope: b.scope, agentId: b.agentId, updatedAt: b.updatedAt })),
+              count: blocks.length,
+            },
+          };
+        }
+        case "read_peer_output": {
+          const peerAgentId = typeof input.agentId === "string" ? input.agentId : "";
+          if (!peerAgentId) throw new Error("read_peer_output requires agentId.");
+          const peerAgent = await repositories.agents.findById(peerAgentId);
+          if (!peerAgent || peerAgent.workspaceId !== context.run.workspaceId) {
+            throw new Error(`Agent ${peerAgentId} not found in this workspace.`);
+          }
+          let runId = typeof input.runId === "string" ? input.runId : null;
+          if (!runId) {
+            const latestRuns = await repositories.runs.listByAgent(peerAgentId);
+            runId = latestRuns[0]?.id ?? null;
+          }
+          if (!runId) {
+            return { status: "completed", output: { agentId: peerAgentId, agentTitle: peerAgent.title, runId: null, entries: [], artifacts: [] } };
+          }
+          const lastN = typeof input.lastN === "number" ? Math.min(Math.max(1, input.lastN), 200) : 50;
+          const [entries, artifacts] = await Promise.all([
+            repositories.transcript.listByRunLimited(runId, lastN),
+            repositories.artifacts.listByRun(runId),
+          ]);
+          return {
+            status: "completed",
+            output: {
+              agentId: peerAgentId,
+              agentTitle: peerAgent.title,
+              runId,
+              entries: entries.map((e) => ({ seq: e.seq, type: e.entryType, content: e.content.slice(0, 4096), createdAt: e.createdAt })),
+              artifacts: artifacts.map((a) => ({ id: a.id, kind: a.kind, uri: a.uri })),
+            },
+          };
+        }
+        case "send_agent_message": {
+          const toAgentId = typeof input.toAgentId === "string" ? input.toAgentId : "";
+          if (!toAgentId) throw new Error("send_agent_message requires toAgentId.");
+          if (toAgentId === context.run.agentId) throw new Error("Cannot send a message to yourself.");
+          const subject = (typeof input.subject === "string" ? input.subject : "").slice(0, 140);
+          const content = typeof input.content === "string" ? input.content : "";
+          if (!subject) throw new Error("send_agent_message requires a non-empty subject.");
+          const sameWorkspace = await repositories.messages.verifySameWorkspace(context.run.agentId, toAgentId);
+          if (!sameWorkspace) throw new Error(`Agent ${toAgentId} is not in the same workspace.`);
+          const now = new Date().toISOString();
+          const message = await repositories.messages.send({
+            id: createId("msg"),
+            workspaceId: context.run.workspaceId,
+            fromAgentId: context.run.agentId,
+            toAgentId,
+            subject,
+            content,
+            createdAt: now,
+          });
+          return {
+            status: "completed",
+            output: { messageId: message.id, toAgentId, subject, sentAt: message.createdAt },
+          };
+        }
+        case "mark_message_read": {
+          const messageId = typeof input.messageId === "string" ? input.messageId : "";
+          if (!messageId) throw new Error("mark_message_read requires messageId.");
+          const updated = await repositories.messages.markRead(messageId, context.run.agentId);
+          if (!updated) {
+            return { status: "completed", output: { messageId, error: "Message not found or not addressed to this agent." } };
+          }
+          return {
+            status: "completed",
+            output: { messageId: updated.id, readAt: updated.readAt },
+          };
+        }
+        case "update_shared_context": {
+          const key = (typeof input.key === "string" ? input.key : "").slice(0, 128);
+          if (!key) throw new Error("update_shared_context requires a non-empty key.");
+          const value = typeof input.value === "string" ? input.value : String(input.value ?? "");
+          const updated = await repositories.workspaces.updateSharedContextKey(context.run.workspaceId, key, value);
+          const totalKeys = updated ? Object.keys(updated.sharedContextKv).length : 0;
+          return {
+            status: "completed",
+            output: { key, value, totalKeys, updatedAt: updated?.updatedAt ?? new Date().toISOString() },
           };
         }
         default:

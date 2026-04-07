@@ -1,4 +1,6 @@
 import type {
+  AgentMemoryBlockRecord,
+  AgentMessageRecord,
   ApprovalRequestRecord,
   ApprovalStatus,
   ArtifactRecord,
@@ -21,6 +23,7 @@ import type {
   ContextPackRecord,
   HandoffItemRecord,
   HandoffStatus,
+  MemoryScope,
   ToolCallRecord,
   ToolCallStatus,
   TranscriptEntryRecord,
@@ -42,6 +45,7 @@ type WorkspaceRow = QueryResultRow & {
   description: string | null;
   project_root: string | null;
   shared_context: string | null;
+  shared_context_kv: string | null;
   layout_config: string | null;
   coordination_brief: string | null;
   created_at: string;
@@ -193,9 +197,32 @@ type HandoffRow = QueryResultRow & {
   recommended_model: string;
   next_prompt: string;
   artifact_ids: string | null;
+  auto_assign: number | null;
   status: HandoffStatus;
   created_at: string;
   updated_at: string;
+};
+
+type MemoryBlockRow = QueryResultRow & {
+  id: string;
+  workspace_id: string;
+  agent_id: string;
+  key: string;
+  value: string;
+  scope: MemoryScope;
+  created_at: string;
+  updated_at: string;
+};
+
+type AgentMessageRow = QueryResultRow & {
+  id: string;
+  workspace_id: string;
+  from_agent_id: string;
+  to_agent_id: string;
+  subject: string;
+  content: string;
+  read_at: string | null;
+  created_at: string;
 };
 
 type CoordinationStateRow = QueryResultRow & {
@@ -769,6 +796,21 @@ function buildInClause(values: readonly string[]): string {
   return values.map(() => "?").join(", ");
 }
 
+function parseStringMap(value: string | null | undefined): Record<string, string> {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const result: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === "string") result[k] = v;
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
 function mapWorkspace(row: WorkspaceRow): WorkspaceRecord {
   const layoutConfig = parseJsonObject(row.layout_config);
   // Prefer the dedicated coordination_brief column; fall back to the layoutConfig copy for rows
@@ -785,10 +827,37 @@ function mapWorkspace(row: WorkspaceRow): WorkspaceRecord {
     description: row.description ?? "",
     projectRoot: row.project_root ?? "",
     sharedContext: row.shared_context ?? "",
+    sharedContextKv: parseStringMap(row.shared_context_kv),
     coordinationBrief,
     layoutConfig,
     createdAt: toIsoString(row.created_at),
     updatedAt: toIsoString(row.updated_at),
+  };
+}
+
+function mapMemoryBlock(row: MemoryBlockRow): AgentMemoryBlockRecord {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    agentId: row.agent_id,
+    key: row.key,
+    value: row.value,
+    scope: row.scope,
+    createdAt: toIsoString(row.created_at),
+    updatedAt: toIsoString(row.updated_at),
+  };
+}
+
+function mapAgentMessage(row: AgentMessageRow): AgentMessageRecord {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    fromAgentId: row.from_agent_id,
+    toAgentId: row.to_agent_id,
+    subject: row.subject,
+    content: row.content,
+    readAt: row.read_at ?? undefined,
+    createdAt: toIsoString(row.created_at),
   };
 }
 
@@ -958,6 +1027,7 @@ function mapHandoff(row: HandoffRow): HandoffItemRecord {
     assignedAgentId: row.assigned_agent_id ?? undefined,
     title: row.title,
     summary: row.summary,
+    autoAssign: row.auto_assign === 1,
     recommendedProvider: row.recommended_provider,
     recommendedModel: row.recommended_model,
     nextPrompt: row.next_prompt,
@@ -1069,7 +1139,8 @@ export interface Repositories {
     list(): Promise<WorkspaceRecord[]>;
     create(input: Pick<WorkspaceRecord, "id" | "name" | "description" | "projectRoot" | "sharedContext" | "layoutConfig">): Promise<WorkspaceRecord>;
     findById(id: string): Promise<WorkspaceRecord | null>;
-    update(id: string, input: Partial<Pick<WorkspaceRecord, "name" | "description" | "projectRoot" | "sharedContext" | "layoutConfig">>): Promise<WorkspaceRecord | null>;
+    update(id: string, input: Partial<Pick<WorkspaceRecord, "name" | "description" | "projectRoot" | "sharedContext" | "sharedContextKv" | "layoutConfig">>): Promise<WorkspaceRecord | null>;
+    updateSharedContextKey(workspaceId: string, key: string, value: string): Promise<WorkspaceRecord | null>;
     delete(id: string): Promise<boolean>;
   };
   agents: {
@@ -1095,6 +1166,7 @@ export interface Repositories {
   };
   transcript: {
     listByRun(runId: string): Promise<TranscriptEntryRecord[]>;
+    listByRunLimited(runId: string, lastN: number): Promise<TranscriptEntryRecord[]>;
     append(entry: Omit<TranscriptEntryRecord, "seq"> & { seq?: number }): Promise<TranscriptEntryRecord>;
   };
   toolCalls: {
@@ -1138,6 +1210,19 @@ export interface Repositories {
     listByRun(runId: string): Promise<ArtifactRecord[]>;
     create(artifact: ArtifactRecord): Promise<ArtifactRecord>;
   };
+  memory: {
+    upsert(block: AgentMemoryBlockRecord): Promise<AgentMemoryBlockRecord>;
+    listForAgent(agentId: string): Promise<AgentMemoryBlockRecord[]>;
+    listWorkspaceScoped(workspaceId: string): Promise<AgentMemoryBlockRecord[]>;
+    findByAgentAndKey(agentId: string, key: string): Promise<AgentMemoryBlockRecord | null>;
+  };
+  messages: {
+    send(message: AgentMessageRecord): Promise<AgentMessageRecord>;
+    listUnreadForAgent(agentId: string): Promise<AgentMessageRecord[]>;
+    markRead(messageId: string, agentId: string): Promise<AgentMessageRecord | null>;
+    findById(id: string): Promise<AgentMessageRecord | null>;
+    verifySameWorkspace(fromAgentId: string, toAgentId: string): Promise<boolean>;
+  };
 }
 
 export function createRepositories(db: Database): Repositories {
@@ -1145,7 +1230,7 @@ export function createRepositories(db: Database): Repositories {
     workspaces: {
       async list(): Promise<WorkspaceRecord[]> {
         const result = await db.query<WorkspaceRow>(`
-            select id, name, description, project_root, shared_context, layout_config, coordination_brief, created_at, updated_at
+            select id, name, description, project_root, shared_context, shared_context_kv, layout_config, coordination_brief, created_at, updated_at
             from workspaces
             order by created_at desc
           `);
@@ -1173,7 +1258,7 @@ export function createRepositories(db: Database): Repositories {
       },
       async findById(id): Promise<WorkspaceRecord | null> {
         const result = await db.query<WorkspaceRow>(
-          `select id, name, description, project_root, shared_context, layout_config, coordination_brief, created_at, updated_at from workspaces where id = ?`,
+          `select id, name, description, project_root, shared_context, shared_context_kv, layout_config, coordination_brief, created_at, updated_at from workspaces where id = ?`,
           [id],
         );
         return result.rows[0] ? mapWorkspace(result.rows[0]) : null;
@@ -1182,19 +1267,32 @@ export function createRepositories(db: Database): Repositories {
         const existing = await this.findById(id);
         if (!existing) return null;
         const now = new Date().toISOString();
+        const nextKv = input.sharedContextKv ?? existing.sharedContextKv;
         await db.query(
-          `update workspaces set name = ?, description = ?, project_root = ?, shared_context = ?, layout_config = ?, updated_at = ? where id = ?`,
+          `update workspaces set name = ?, description = ?, project_root = ?, shared_context = ?, shared_context_kv = ?, layout_config = ?, updated_at = ? where id = ?`,
           [
             input.name ?? existing.name,
             input.description ?? existing.description,
             input.projectRoot ?? existing.projectRoot,
             input.sharedContext ?? existing.sharedContext,
+            JSON.stringify(nextKv),
             JSON.stringify(input.layoutConfig ?? existing.layoutConfig),
             now,
             id,
           ],
         );
         return this.findById(id);
+      },
+      async updateSharedContextKey(workspaceId, key, value): Promise<WorkspaceRecord | null> {
+        const existing = await this.findById(workspaceId);
+        if (!existing) return null;
+        const kv = { ...existing.sharedContextKv, [key]: value };
+        const now = new Date().toISOString();
+        await db.query(
+          `update workspaces set shared_context_kv = ?, updated_at = ? where id = ?`,
+          [JSON.stringify(kv), now, workspaceId],
+        );
+        return this.findById(workspaceId);
       },
       async delete(id): Promise<boolean> {
         const result = await db.query(`delete from workspaces where id = ?`, [id]);
@@ -1387,6 +1485,18 @@ export function createRepositories(db: Database): Repositories {
         );
         return result.rows.map(mapTranscriptEntry);
       },
+      async listByRunLimited(runId: string, lastN: number): Promise<TranscriptEntryRecord[]> {
+        const clampedN = Math.min(Math.max(1, lastN), 200);
+        const result = await db.query<TranscriptEntryRow>(
+          `select id, run_id, workspace_id, agent_id, seq, entry_type, content, metadata, created_at
+           from transcript_entries
+           where run_id = ? and entry_type in ('assistant', 'tool')
+           order by seq desc limit ?`,
+          [runId, clampedN],
+        );
+        // Return in ascending order
+        return result.rows.reverse().map(mapTranscriptEntry);
+      },
       async append(entry): Promise<TranscriptEntryRecord> {
         const seq = entry.seq ?? (await getNextTranscriptSequence(db, entry.runId));
         const createdAt = entry.createdAt;
@@ -1531,7 +1641,7 @@ export function createRepositories(db: Database): Repositories {
     handoffs: {
       async listByWorkspace(workspaceId: string): Promise<HandoffItemRecord[]> {
         const result = await db.query<HandoffRow>(
-          `select id, workspace_id, source_agent_id, source_run_id, assigned_agent_id, title, summary, recommended_provider, recommended_model, next_prompt, artifact_ids, status, created_at, updated_at
+          `select id, workspace_id, source_agent_id, source_run_id, assigned_agent_id, title, summary, recommended_provider, recommended_model, next_prompt, artifact_ids, auto_assign, status, created_at, updated_at
            from handoff_items where workspace_id = ? order by created_at desc`,
           [workspaceId],
         );
@@ -1539,7 +1649,7 @@ export function createRepositories(db: Database): Repositories {
       },
       async findById(id: string): Promise<HandoffItemRecord | null> {
         const result = await db.query<HandoffRow>(
-          `select id, workspace_id, source_agent_id, source_run_id, assigned_agent_id, title, summary, recommended_provider, recommended_model, next_prompt, artifact_ids, status, created_at, updated_at
+          `select id, workspace_id, source_agent_id, source_run_id, assigned_agent_id, title, summary, recommended_provider, recommended_model, next_prompt, artifact_ids, auto_assign, status, created_at, updated_at
            from handoff_items where id = ?`,
           [id],
         );
@@ -1547,8 +1657,8 @@ export function createRepositories(db: Database): Repositories {
       },
       async create(handoff): Promise<HandoffItemRecord> {
         await db.query(
-          `insert into handoff_items (id, workspace_id, source_agent_id, source_run_id, assigned_agent_id, title, summary, recommended_provider, recommended_model, next_prompt, artifact_ids, status, created_at, updated_at)
-           values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `insert into handoff_items (id, workspace_id, source_agent_id, source_run_id, assigned_agent_id, title, summary, recommended_provider, recommended_model, next_prompt, artifact_ids, auto_assign, status, created_at, updated_at)
+           values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             handoff.id,
             handoff.workspaceId,
@@ -1561,6 +1671,7 @@ export function createRepositories(db: Database): Repositories {
             handoff.recommendedModel,
             handoff.nextPrompt,
             JSON.stringify(handoff.artifactIds),
+            handoff.autoAssign ? 1 : 0,
             handoff.status,
             handoff.createdAt,
             handoff.updatedAt,
@@ -1799,6 +1910,92 @@ export function createRepositories(db: Database): Repositories {
           [artifact.id],
         );
         return mapArtifact(result.rows[0]);
+      },
+    },
+
+    memory: {
+      async upsert(block: AgentMemoryBlockRecord): Promise<AgentMemoryBlockRecord> {
+        const now = new Date().toISOString();
+        await db.query(
+          `INSERT INTO agent_memory_blocks (id, workspace_id, agent_id, key, value, scope, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(agent_id, key) DO UPDATE SET
+             value = excluded.value,
+             scope = excluded.scope,
+             updated_at = excluded.updated_at`,
+          [block.id, block.workspaceId, block.agentId, block.key, block.value, block.scope, block.createdAt, now],
+        );
+        const result = await db.query<MemoryBlockRow>(
+          `SELECT id, workspace_id, agent_id, key, value, scope, created_at, updated_at FROM agent_memory_blocks WHERE agent_id = ? AND key = ?`,
+          [block.agentId, block.key],
+        );
+        if (!result.rows[0]) throw new Error(`Failed to upsert memory block ${block.agentId}:${block.key}`);
+        return mapMemoryBlock(result.rows[0]);
+      },
+      async listForAgent(agentId: string): Promise<AgentMemoryBlockRecord[]> {
+        const result = await db.query<MemoryBlockRow>(
+          `SELECT id, workspace_id, agent_id, key, value, scope, created_at, updated_at FROM agent_memory_blocks WHERE agent_id = ? ORDER BY key ASC`,
+          [agentId],
+        );
+        return result.rows.map(mapMemoryBlock);
+      },
+      async listWorkspaceScoped(workspaceId: string): Promise<AgentMemoryBlockRecord[]> {
+        const result = await db.query<MemoryBlockRow>(
+          `SELECT id, workspace_id, agent_id, key, value, scope, created_at, updated_at FROM agent_memory_blocks WHERE workspace_id = ? AND scope = 'workspace' ORDER BY agent_id, key ASC`,
+          [workspaceId],
+        );
+        return result.rows.map(mapMemoryBlock);
+      },
+      async findByAgentAndKey(agentId: string, key: string): Promise<AgentMemoryBlockRecord | null> {
+        const result = await db.query<MemoryBlockRow>(
+          `SELECT id, workspace_id, agent_id, key, value, scope, created_at, updated_at FROM agent_memory_blocks WHERE agent_id = ? AND key = ?`,
+          [agentId, key],
+        );
+        return result.rows[0] ? mapMemoryBlock(result.rows[0]) : null;
+      },
+    },
+
+    messages: {
+      async send(message: AgentMessageRecord): Promise<AgentMessageRecord> {
+        await db.query(
+          `INSERT INTO agent_messages (id, workspace_id, from_agent_id, to_agent_id, subject, content, read_at, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [message.id, message.workspaceId, message.fromAgentId, message.toAgentId, message.subject, message.content, message.readAt ?? null, message.createdAt],
+        );
+        const result = await db.query<AgentMessageRow>(
+          `SELECT id, workspace_id, from_agent_id, to_agent_id, subject, content, read_at, created_at FROM agent_messages WHERE id = ?`,
+          [message.id],
+        );
+        if (!result.rows[0]) throw new Error(`Failed to create message ${message.id}`);
+        return mapAgentMessage(result.rows[0]);
+      },
+      async listUnreadForAgent(agentId: string): Promise<AgentMessageRecord[]> {
+        const result = await db.query<AgentMessageRow>(
+          `SELECT id, workspace_id, from_agent_id, to_agent_id, subject, content, read_at, created_at FROM agent_messages WHERE to_agent_id = ? AND read_at IS NULL ORDER BY created_at ASC`,
+          [agentId],
+        );
+        return result.rows.map(mapAgentMessage);
+      },
+      async markRead(messageId: string, agentId: string): Promise<AgentMessageRecord | null> {
+        const existing = await this.findById(messageId);
+        if (!existing || existing.toAgentId !== agentId) return null;
+        const readAt = new Date().toISOString();
+        await db.query(`UPDATE agent_messages SET read_at = ? WHERE id = ?`, [readAt, messageId]);
+        return this.findById(messageId);
+      },
+      async findById(id: string): Promise<AgentMessageRecord | null> {
+        const result = await db.query<AgentMessageRow>(
+          `SELECT id, workspace_id, from_agent_id, to_agent_id, subject, content, read_at, created_at FROM agent_messages WHERE id = ?`,
+          [id],
+        );
+        return result.rows[0] ? mapAgentMessage(result.rows[0]) : null;
+      },
+      async verifySameWorkspace(fromAgentId: string, toAgentId: string): Promise<boolean> {
+        const result = await db.query<QueryResultRow>(
+          `SELECT COUNT(*) AS cnt FROM agent_sessions WHERE id IN (?, ?) GROUP BY workspace_id HAVING COUNT(*) = 2`,
+          [fromAgentId, toAgentId],
+        );
+        return (result.rows[0]?.cnt as number | undefined) === 2;
       },
     },
   };

@@ -98,10 +98,15 @@ async function loadRuntimeContext(
   cwd: string | undefined;
   contextItems: Array<{ id: string; type: ContextItemRecord["type"]; value: string }>;
 }> {
-  const [workspace, mountedItems] = await Promise.all([
+  const [workspace, mountedItems, privateMemory, unreadMessages] = await Promise.all([
     repositories.workspaces.findById(agent.workspaceId),
     repositories.contexts.listMountedItems(agent.id),
+    repositories.memory.listForAgent(agent.id),
+    repositories.messages.listUnreadForAgent(agent.id),
   ]);
+  const workspaceMemory = workspace
+    ? await repositories.memory.listWorkspaceScoped(agent.workspaceId)
+    : [];
   const contextItems: Array<{ id: string; type: ContextItemRecord["type"]; value: string }> = [];
 
   if (workspace?.sharedContext.trim()) {
@@ -109,6 +114,53 @@ async function loadRuntimeContext(
       id: `${workspace.id}:shared-context`,
       type: "text",
       value: workspace.sharedContext.trim(),
+    });
+  }
+
+  const ownPrivateMemory = privateMemory.filter((b) => b.scope === "private");
+  if (ownPrivateMemory.length > 0) {
+    contextItems.push({
+      id: `${agent.id}:private-memory`,
+      type: "text",
+      value: `My private memory:\n${ownPrivateMemory.map((b) => `  ${b.key}: ${b.value}`).join("\n")}`,
+    });
+  }
+
+  if (workspaceMemory.length > 0) {
+    const grouped = new Map<string, typeof workspaceMemory>();
+    for (const b of workspaceMemory) {
+      const list = grouped.get(b.agentId) ?? [];
+      list.push(b);
+      grouped.set(b.agentId, list);
+    }
+    const lines: string[] = [];
+    for (const [agentId, blocks] of grouped) {
+      const label = agentId === agent.id ? "me" : agentId;
+      for (const b of blocks) {
+        lines.push(`  [${label}] ${b.key}: ${b.value}`);
+      }
+    }
+    if (lines.length > 0) {
+      contextItems.push({
+        id: `${agent.workspaceId}:workspace-memory`,
+        type: "text",
+        value: `Workspace shared memory:\n${lines.join("\n")}`,
+      });
+    }
+  }
+
+  if (unreadMessages.length > 0) {
+    const msgLines = unreadMessages.map(
+      (m) => `  [${m.id}] From: ${m.fromAgentId} | Subject: ${m.subject}\n    ${m.content}`,
+    );
+    contextItems.push({
+      id: `${agent.id}:unread-messages`,
+      type: "text",
+      value: [
+        `Unread messages from peer agents (${unreadMessages.length}):`,
+        ...msgLines,
+        "Use mark_message_read(messageId) to acknowledge each message after reading.",
+      ].join("\n"),
     });
   }
 
@@ -128,6 +180,14 @@ async function loadRuntimeContext(
       id: `${agent.id}:coordination-agent-brief`,
       type: "text",
       value: targetContext.trim(),
+    });
+  }
+
+  if (workspace && Object.keys(workspace.sharedContextKv).length > 0) {
+    contextItems.push({
+      id: `${workspace.id}:shared-context-kv`,
+      type: "text",
+      value: `Workspace shared key-value context:\n${Object.entries(workspace.sharedContextKv).map(([k, v]) => `  ${k}: ${v}`).join("\n")}`,
     });
   }
 

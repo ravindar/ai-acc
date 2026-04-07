@@ -1224,6 +1224,7 @@ export interface CoordinationService {
   }>;
   /** Compares blocked agents before/after a state refresh. Returns agentIds that are now unblocked. */
   resumeBlockedAgents(workspaceId: string): Promise<string[]>;
+  setAutoSpawnCallback(cb: ((handoffId: string, prompt: string) => Promise<void>) | null): void;
   onHandoffCreated(workspaceId: string, handoffId: string): Promise<void>;
   onHandoffResolved(workspaceId: string, handoffId: string): Promise<void>;
   onRunCompleted(workspaceId: string, agentId: string, runId: string, outcome: "completed" | "error"): Promise<void>;
@@ -1247,6 +1248,8 @@ export interface CoordinationService {
 
 export function createCoordinationService(repositories: Repositories): CoordinationService {
   const refreshWindowMs = 3_000;
+
+  let autoSpawnCallback: ((handoffId: string, prompt: string) => Promise<void>) | null = null;
 
   return {
     async getWorkspaceState(workspaceId) {
@@ -1488,6 +1491,16 @@ export function createCoordinationService(repositories: Repositories): Coordinat
       };
       await repositories.coordination.upsert(updatedState);
       await this.refreshWorkspaceState(workspaceId);
+      if (autoSpawnCallback) {
+        const handoff = await repositories.handoffs.findById(handoffId);
+        if (handoff?.autoAssign) {
+          try {
+            await autoSpawnCallback(handoffId, handoff.nextPrompt);
+          } catch (err) {
+            console.warn(`auto-spawn failed for handoff ${handoffId}: ${String(err)}`);
+          }
+        }
+      }
     },
 
     async onHandoffResolved(workspaceId, handoffId) {
@@ -1637,6 +1650,10 @@ export function createCoordinationService(repositories: Repositories): Coordinat
       await repositories.coordination.upsert({ ...state, replyPackets: newReplyPackets });
 
       return { status: "routed", packets, blockedAgentIds };
+    },
+
+    setAutoSpawnCallback(cb: ((handoffId: string, prompt: string) => Promise<void>) | null): void {
+      autoSpawnCallback = cb;
     },
   };
 }

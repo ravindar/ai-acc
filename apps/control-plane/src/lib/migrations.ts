@@ -17,6 +17,8 @@ const requiredTables = [
   "handoff_items",
   "agent_worktrees",
   "workspace_coordination_states",
+  "agent_memory_blocks",
+  "agent_messages",
 ] as const;
 
 const baselineSchema = `
@@ -773,6 +775,46 @@ const embeddedMigrations: readonly EmbeddedMigration[] = [
           select brief from workspace_coordination_states where workspace_id = workspaces.id
         ) where exists (select 1 from workspace_coordination_states where workspace_id = workspaces.id)
       `);
+    },
+  },
+  {
+    name: "0010_cross_agent_context.sql",
+    apply: async (db) => {
+      await db.exec(`
+        CREATE TABLE IF NOT EXISTS agent_memory_blocks (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+          agent_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+          key TEXT NOT NULL,
+          value TEXT NOT NULL,
+          scope TEXT NOT NULL CHECK(scope IN ('private','workspace')) DEFAULT 'private',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(agent_id, key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_blocks_workspace ON agent_memory_blocks(workspace_id, scope);
+        CREATE INDEX IF NOT EXISTS idx_memory_blocks_agent ON agent_memory_blocks(agent_id);
+
+        CREATE TABLE IF NOT EXISTS agent_messages (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+          from_agent_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+          to_agent_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+          subject TEXT NOT NULL,
+          content TEXT NOT NULL,
+          read_at TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_messages_to ON agent_messages(to_agent_id, read_at);
+      `);
+
+      // Feature 5: workspace shared KV
+      await ensureColumn(db, "workspaces", "shared_context_kv",
+        `ALTER TABLE workspaces ADD COLUMN shared_context_kv TEXT NOT NULL DEFAULT '{}'`);
+
+      // Feature 3: handoff auto-spawn flag
+      await ensureColumn(db, "handoff_items", "auto_assign",
+        `ALTER TABLE handoff_items ADD COLUMN auto_assign INTEGER NOT NULL DEFAULT 0`);
     },
   },
 ] as const;

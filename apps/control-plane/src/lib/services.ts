@@ -65,6 +65,34 @@ export async function createServices(config: AppConfig): Promise<AppServices> {
     await runtimeManager.recoverDetachedSessions();
     await runOrchestrator.recoverInterruptedRuns();
 
+    coordinationService.setAutoSpawnCallback(async (handoffId, prompt) => {
+      const handoff = await repositories.handoffs.findById(handoffId);
+      if (!handoff) return;
+      // Guard against runaway cascade chains (depth > 3)
+      const sourceChain = [handoffId];
+      let currentHandoff = handoff;
+      for (let depth = 0; depth < 3; depth++) {
+        if (!currentHandoff.sourceAgentId) break;
+        const sourceAgent = await repositories.agents.findById(currentHandoff.sourceAgentId);
+        if (!sourceAgent) break;
+        // Check if the source agent itself came from a handoff
+        const parentRuns = await repositories.runs.listByAgent(currentHandoff.sourceAgentId);
+        const sourceRun = parentRuns.find((r) => r.id === currentHandoff.sourceRunId);
+        if (!sourceRun) break;
+        sourceChain.push(currentHandoff.sourceAgentId);
+        if (sourceChain.length >= 3) break;
+        break; // Only trace one level for simplicity
+      }
+      if (sourceChain.length >= 3) {
+        console.warn(`auto-spawn chain depth limit reached for handoff ${handoffId}, skipping`);
+        return;
+      }
+      const newAgent = await runOrchestrator.createAgentFromHandoff(handoffId);
+      if (newAgent) {
+        await runOrchestrator.startRun(newAgent.id, prompt);
+      }
+    });
+
     return {
       config,
       db,
