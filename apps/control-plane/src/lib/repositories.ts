@@ -1525,14 +1525,17 @@ export function createRepositories(db: Database): Repositories {
       async listLatestBatchForRuns(runIds: string[], limitPerRun: number): Promise<TranscriptEntryRecord[]> {
         if (runIds.length === 0) return [];
         const placeholders = runIds.map(() => "?").join(", ");
+        // Order DESC to get the latest entries first, then slice to limitPerRun per run.
+        // We reverse each group back to ASC order before returning so callers get
+        // chronological ordering within each run.
         const result = await db.query<TranscriptEntryRow>(
           `select id, run_id, workspace_id, agent_id, seq, entry_type, content, metadata, created_at
            from transcript_entries
            where run_id in (${placeholders})
-           order by run_id, seq asc`,
+           order by run_id, seq desc`,
           [...runIds],
         );
-        // Group by runId and keep at most limitPerRun per run
+        // Group by runId, keeping the first limitPerRun rows per run (= the latest entries)
         const grouped = new Map<string, TranscriptEntryRow[]>();
         for (const row of result.rows) {
           const group = grouped.get(row.run_id) ?? [];
@@ -1541,7 +1544,8 @@ export function createRepositories(db: Database): Repositories {
           }
           grouped.set(row.run_id, group);
         }
-        return [...grouped.values()].flat().map(mapTranscriptEntry);
+        // Reverse each group back to ascending (chronological) order
+        return [...grouped.values()].flatMap((group) => group.reverse().map(mapTranscriptEntry));
       },
       async append(entry): Promise<TranscriptEntryRecord> {
         const seq = entry.seq ?? (await getNextTranscriptSequence(db, entry.runId));
