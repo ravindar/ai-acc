@@ -1529,6 +1529,7 @@ export function App() {
   const [fleetActivityFeed, setFleetActivityFeed] = useState<FleetActivityItem[]>([]);
   const [pendingRunRequests, setPendingRunRequests] = useState<Record<string, { ts: string; prompt: string; runId?: string }>>({});
   const [workspaceContextExpanded, setWorkspaceContextExpanded] = useState(false);
+  const [usageBreakdownOpen, setUsageBreakdownOpen] = useState(false);
 
   useEffect(() => {
     if (!workspaceNotice) {
@@ -7506,17 +7507,66 @@ export function App() {
                 {coordinationActionRequestCount} request{coordinationActionRequestCount === 1 ? "" : "s"}
               </span>
               {totalTokens > 0 && (
-                <span
-                  className="compact-note workspace-usage-pill"
-                  title={`${(overview?.usageSummary.totalInputTokens ?? 0).toLocaleString()} in · ${(overview?.usageSummary.totalOutputTokens ?? 0).toLocaleString()} out`}
-                >
-                  {totalTokens >= 1_000_000
-                    ? `${(totalTokens / 1_000_000).toFixed(1)}M tok`
-                    : totalTokens >= 1_000
-                      ? `${(totalTokens / 1_000).toFixed(1)}k tok`
-                      : `${totalTokens} tok`}
-                  {totalCost > 0 && ` · $${totalCost < 0.01 ? totalCost.toFixed(4) : totalCost.toFixed(2)}`}
-                </span>
+                <div className="workspace-usage-popover-anchor">
+                  <button
+                    className={usageBreakdownOpen ? "compact-note workspace-usage-pill workspace-usage-pill-active" : "compact-note workspace-usage-pill"}
+                    onClick={() => setUsageBreakdownOpen((o) => !o)}
+                    type="button"
+                    title="Click to see per-agent breakdown"
+                  >
+                    {totalTokens >= 1_000_000
+                      ? `${(totalTokens / 1_000_000).toFixed(1)}M tok`
+                      : totalTokens >= 1_000
+                        ? `${(totalTokens / 1_000).toFixed(1)}k tok`
+                        : `${totalTokens} tok`}
+                    {totalCost > 0 && ` · $${totalCost < 0.01 ? totalCost.toFixed(4) : totalCost.toFixed(2)}`}
+                    {" ▾"}
+                  </button>
+                  {usageBreakdownOpen && (
+                    <div className="workspace-usage-dropdown">
+                      <div className="workspace-usage-dropdown-header">
+                        <span>Agent</span>
+                        <span>Tokens (in / out)</span>
+                        <span>Cost</span>
+                      </div>
+                      {agents
+                        .filter((a) => a.usage.totalInputTokens + a.usage.totalOutputTokens > 0)
+                        .sort((a, b) => b.usage.totalCostUsd - a.usage.totalCostUsd)
+                        .map((a) => {
+                          const tok = a.usage.totalInputTokens + a.usage.totalOutputTokens;
+                          const cost = a.usage.totalCostUsd;
+                          const tokLabel =
+                            tok >= 1_000_000
+                              ? `${(tok / 1_000_000).toFixed(2)}M`
+                              : tok >= 1_000
+                                ? `${(tok / 1_000).toFixed(1)}k`
+                                : `${tok}`;
+                          const inLabel = a.usage.totalInputTokens >= 1_000
+                            ? `${(a.usage.totalInputTokens / 1_000).toFixed(1)}k`
+                            : `${a.usage.totalInputTokens}`;
+                          const outLabel = a.usage.totalOutputTokens >= 1_000
+                            ? `${(a.usage.totalOutputTokens / 1_000).toFixed(1)}k`
+                            : `${a.usage.totalOutputTokens}`;
+                          return (
+                            <div key={a.id} className="workspace-usage-dropdown-row">
+                              <span className="workspace-usage-dropdown-name" title={a.title}>{a.title}</span>
+                              <span className="workspace-usage-dropdown-tokens">{tokLabel} <span className="workspace-usage-dropdown-split">({inLabel} / {outLabel})</span></span>
+                              <span className="workspace-usage-dropdown-cost">
+                                {cost > 0
+                                  ? `$${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)}`
+                                  : "—"}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      <div className="workspace-usage-dropdown-total">
+                        <span>Total</span>
+                        <span>{totalTokens >= 1_000 ? `${(totalTokens / 1_000).toFixed(1)}k` : totalTokens}</span>
+                        <span>{totalCost > 0 ? `$${totalCost < 0.01 ? totalCost.toFixed(4) : totalCost.toFixed(2)}` : "—"}</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
               )}
               <button
                 className={workspaceContextExpanded ? "chip chip-active" : "chip"}
@@ -7527,40 +7577,6 @@ export function App() {
               </button>
             </div>
           </div>
-          {(() => {
-            const agentsWithUsage = agents.filter(
-              (a) => a.usage.totalInputTokens + a.usage.totalOutputTokens > 0,
-            );
-            if (agentsWithUsage.length === 0) return null;
-            return (
-              <div className="workspace-agent-usage-row">
-                {agentsWithUsage
-                  .sort((a, b) => b.usage.totalCostUsd - a.usage.totalCostUsd)
-                  .map((a) => {
-                    const tok = a.usage.totalInputTokens + a.usage.totalOutputTokens;
-                    const cost = a.usage.totalCostUsd;
-                    const tokLabel =
-                      tok >= 1_000_000
-                        ? `${(tok / 1_000_000).toFixed(1)}M`
-                        : `${(tok / 1_000).toFixed(1)}k`;
-                    const costLabel =
-                      cost > 0
-                        ? ` · $${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)}`
-                        : "";
-                    return (
-                      <span
-                        key={a.id}
-                        className="workspace-agent-usage-item"
-                        title={`${a.usage.totalInputTokens.toLocaleString()} in · ${a.usage.totalOutputTokens.toLocaleString()} out`}
-                      >
-                        <span className="workspace-agent-usage-name">{a.title}</span>
-                        <span className="workspace-agent-usage-stats">{tokLabel} tok{costLabel}</span>
-                      </span>
-                    );
-                  })}
-              </div>
-            );
-          })()}
           {workspaceContextExpanded ? (
             <div className="workspace-context-expanded">
               <div className="compact-notices">
