@@ -671,11 +671,15 @@ fn list_project_tree(root: String) -> Result<Vec<FileTreeNode>, String> {
 }
 
 #[tauri::command]
-fn read_text_file(path: String) -> Result<TextFilePreview, String> {
+fn read_text_file(path: String, allowed_roots: Vec<String>) -> Result<TextFilePreview, String> {
     let canonical_path = fs::canonicalize(PathBuf::from(&path)).map_err(|error| error.to_string())?;
 
     if !canonical_path.is_file() {
         return Err("The selected path is not a file.".to_string());
+    }
+
+    if !allowed_roots.is_empty() && !is_within_any_root(&canonical_path, &allowed_roots) {
+        return Err("Access denied: path is outside allowed roots".into());
     }
 
     let bytes = fs::read(&canonical_path).map_err(|error| error.to_string())?;

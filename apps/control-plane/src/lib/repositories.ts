@@ -1157,6 +1157,8 @@ export interface Repositories {
   };
   runs: {
     listByAgent(agentId: string): Promise<AgentRunRecord[]>;
+    /** Returns up to `limitPerAgent` most recent runs for each agent in a single query. */
+    listLatestBatchForAgents(agentIds: string[], limitPerAgent: number): Promise<AgentRunRecord[]>;
     findById(id: string): Promise<AgentRunRecord | null>;
     findActiveByAgent(agentId: string): Promise<AgentRunRecord | null>;
     /** Returns the most recent QUEUED run for the given agent, or null. */
@@ -1167,6 +1169,8 @@ export interface Repositories {
   transcript: {
     listByRun(runId: string): Promise<TranscriptEntryRecord[]>;
     listByRunLimited(runId: string, lastN: number): Promise<TranscriptEntryRecord[]>;
+    /** Returns up to `limitPerRun` transcript entries for each run in a single query. */
+    listLatestBatchForRuns(runIds: string[], limitPerRun: number): Promise<TranscriptEntryRecord[]>;
     append(entry: Omit<TranscriptEntryRecord, "seq"> & { seq?: number }): Promise<TranscriptEntryRecord>;
   };
   toolCalls: {
@@ -1414,6 +1418,27 @@ export function createRepositories(db: Database): Repositories {
         );
         return result.rows.map(mapRun);
       },
+      async listLatestBatchForAgents(agentIds: string[], limitPerAgent: number): Promise<AgentRunRecord[]> {
+        if (agentIds.length === 0) return [];
+        const placeholders = agentIds.map(() => "?").join(", ");
+        const result = await db.query<AgentRunRow>(
+          `select id, workspace_id, agent_id, title, prompt, state, error_message, created_at, updated_at, started_at, completed_at
+           from agent_runs
+           where agent_id in (${placeholders})
+           order by agent_id, created_at desc`,
+          [...agentIds],
+        );
+        // Group by agentId and keep at most limitPerAgent per agent
+        const grouped = new Map<string, AgentRunRow[]>();
+        for (const row of result.rows) {
+          const group = grouped.get(row.agent_id) ?? [];
+          if (group.length < limitPerAgent) {
+            group.push(row);
+          }
+          grouped.set(row.agent_id, group);
+        }
+        return [...grouped.values()].flat().map(mapRun);
+      },
       async findById(id: string): Promise<AgentRunRecord | null> {
         const result = await db.query<AgentRunRow>(
           `select id, workspace_id, agent_id, title, prompt, state, error_message, created_at, updated_at, started_at, completed_at
@@ -1496,6 +1521,27 @@ export function createRepositories(db: Database): Repositories {
         );
         // Return in ascending order
         return result.rows.reverse().map(mapTranscriptEntry);
+      },
+      async listLatestBatchForRuns(runIds: string[], limitPerRun: number): Promise<TranscriptEntryRecord[]> {
+        if (runIds.length === 0) return [];
+        const placeholders = runIds.map(() => "?").join(", ");
+        const result = await db.query<TranscriptEntryRow>(
+          `select id, run_id, workspace_id, agent_id, seq, entry_type, content, metadata, created_at
+           from transcript_entries
+           where run_id in (${placeholders})
+           order by run_id, seq asc`,
+          [...runIds],
+        );
+        // Group by runId and keep at most limitPerRun per run
+        const grouped = new Map<string, TranscriptEntryRow[]>();
+        for (const row of result.rows) {
+          const group = grouped.get(row.run_id) ?? [];
+          if (group.length < limitPerRun) {
+            group.push(row);
+          }
+          grouped.set(row.run_id, group);
+        }
+        return [...grouped.values()].flat().map(mapTranscriptEntry);
       },
       async append(entry): Promise<TranscriptEntryRecord> {
         const seq = entry.seq ?? (await getNextTranscriptSequence(db, entry.runId));

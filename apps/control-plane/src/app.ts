@@ -1,5 +1,6 @@
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
+import { refreshPricingCache } from "@acc/pricing";
 import Fastify from "fastify";
 import { ZodError } from "zod";
 
@@ -73,6 +74,8 @@ export async function createApp(services: AppServices) {
   app.addHook("onClose", async () => {
     await services.db.close();
   });
+
+  void refreshPricingCache(); // non-blocking; falls back to baseline if ACC_PRICING_URL not set
 
   await registerHealthRoutes(app);
   await app.register(async (api) => {

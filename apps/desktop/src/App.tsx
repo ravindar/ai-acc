@@ -162,6 +162,8 @@ type WorkspaceTeamAsk = {
   blockedBranches: Array<{ agentId: string; agentTitle: string; blockedSince: string; blockedReason: string }>;
   recommendedResponseShape: "approval" | "input" | "direction" | "confirmation";
   ts: string;
+  /** True when the summary was produced by the batch LLM synthesis step. */
+  synthesized?: boolean;
 };
 
 type WorkspacePromptGroup = {
@@ -225,6 +227,27 @@ const menuItems: Array<{ id: MenuId; label: string }> = [{ id: "settings", label
 
 function defaultModelForProvider(provider: "codex" | "claude"): string {
   return provider === "codex" ? "gpt-5-codex" : "sonnet";
+}
+
+/** Approximate context window sizes for known models. Used to show context budget %. */
+const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
+  "claude-opus-4-6": 200_000,
+  "claude-sonnet-4-6": 200_000,
+  "claude-haiku-4-5-20251001": 200_000,
+  "claude-haiku-4-5": 200_000,
+  "gpt-5-codex": 32_000,
+  "gpt-5.2-codex": 32_000,
+  "gpt-4.1": 128_000,
+  "gpt-4.1-mini": 128_000,
+};
+
+function getModelContextWindow(model: string): number {
+  const key = model.trim().toLowerCase();
+  if (MODEL_CONTEXT_WINDOWS[key]) return MODEL_CONTEXT_WINDOWS[key];
+  for (const [k, v] of Object.entries(MODEL_CONTEXT_WINDOWS)) {
+    if (key.includes(k) || key.startsWith(k.split("-").slice(0, 3).join("-"))) return v;
+  }
+  return 32_000;
 }
 
 function formatBytes(sizeBytes: number): string {
@@ -2723,6 +2746,7 @@ export function App() {
                 blockedBranches: workspaceCoordinationState.teamAsk.blockedBranches ?? [],
                 recommendedResponseShape: workspaceCoordinationState.teamAsk.recommendedResponseShape ?? "direction",
                 ts: workspaceCoordinationState.teamAsk.updatedAt,
+                synthesized: workspaceCoordinationState.teamAsk.synthesized,
               }
             : null;
 
@@ -7733,6 +7757,12 @@ export function App() {
                                     ? "Follow-up ready"
                                     : "Needs your reply"}
                               </span>
+                              {queueItem.kind === "approval" && (() => {
+                                const ageMinutes = Math.floor((Date.now() - new Date(queueItem.ts).getTime()) / 60_000);
+                                return ageMinutes >= 2 ? (
+                                  <span className="approval-overdue-badge">{ageMinutes}m waiting</span>
+                                ) : null;
+                              })()}
                             </div>
                             <div className="thread-message-markdown workspace-action-request-copy">
                               {renderMarkdownBlocks(queueItem.content)}
@@ -8005,6 +8035,12 @@ export function App() {
                                       >
                                         <div className="event-item-header">
                                           <strong>Approval required</strong>
+                                          {(() => {
+                                            const ageMinutes = Math.floor((Date.now() - new Date(reply.ts).getTime()) / 60_000);
+                                            return ageMinutes >= 2 ? (
+                                              <span className="approval-overdue-badge">{ageMinutes}m waiting</span>
+                                            ) : null;
+                                          })()}
                                           <span>{formatEventTimestamp(reply.ts)}</span>
                                         </div>
                                         <div className="thread-message-markdown">{renderMarkdownBlocks(reply.content)}</div>
@@ -8149,6 +8185,9 @@ export function App() {
                         <article className="thread-message thread-message-warning workspace-inline-action-card workspace-team-ask-card">
                           <div className="workspace-inline-action-header">
                             <strong>Agent Command Center needs your guidance</strong>
+                            {group.teamAsk.synthesized && (
+                              <span className="synthesis-badge">AI summary</span>
+                            )}
                             <span>{formatEventTimestamp(group.teamAsk.ts)}</span>
                           </div>
                           <div className="compact-notices">
@@ -8505,6 +8544,9 @@ export function App() {
                           <span className={`badge badge-${agentStatusOverrides.get(agent.id)?.tone ?? agentStateMeta[agent.state].tone}`}>
                             {agentStatusOverrides.get(agent.id)?.label ?? agentStateMeta[agent.state].label}
                           </span>
+                          {agent.state === "WAITING_DEPENDENCY" && (
+                            <span className="agent-dep-badge">blocked</span>
+                          )}
                         </div>
                         <div className="compact-notices">
                           <span className="compact-note">
@@ -8994,6 +9036,16 @@ export function App() {
               {selectedAgent.provider} / {selectedAgent.model}
             </span>
             {selectedRun ? <span className="compact-note">run {selectedRun.id}</span> : null}
+            {selectedRun ? (() => {
+              const contextWindow = getModelContextWindow(selectedAgent.model);
+              const usedTokens = selectedAgent.usage.totalInputTokens;
+              const pct = Math.min(100, Math.round((usedTokens / contextWindow) * 100));
+              return (
+                <span className="context-budget-indicator" title={`${usedTokens.toLocaleString()} / ${contextWindow.toLocaleString()} tokens`}>
+                  Context: {pct}%
+                </span>
+              );
+            })() : null}
             <span className={`badge badge-${agentStateMeta[selectedAgent.state].tone}`}>
               {agentStateMeta[selectedAgent.state].label}
             </span>

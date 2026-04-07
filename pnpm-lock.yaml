@@ -29,6 +29,9 @@ importers:
       '@acc/event-schema':
         specifier: workspace:*
         version: link:../../packages/event-schema
+      '@acc/pricing':
+        specifier: workspace:*
+        version: link:../../packages/pricing
       '@acc/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types
@@ -106,6 +109,9 @@ importers:
       '@acc/adapter-sdk':
         specifier: workspace:*
         version: link:../adapter-sdk
+      '@acc/pricing':
+        specifier: workspace:*
+        version: link:../pricing
     devDependencies:
       '@types/node':
         specifier: ^22.10.2
@@ -116,6 +122,9 @@ importers:
       '@acc/adapter-sdk':
         specifier: workspace:*
         version: link:../adapter-sdk
+      '@acc/pricing':
+        specifier: workspace:*
+        version: link:../pricing
     devDependencies:
       '@types/node':
         specifier: ^22.10.2
@@ -147,6 +156,12 @@ importers:
       zod:
         specifier: ^3.24.1
         version: 3.25.76
+
+  packages/pricing:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.19.15
 
   packages/shared-types: {}
 

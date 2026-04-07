@@ -548,12 +548,12 @@ export async function fetchProjectTree(root: string): Promise<FileTreeNodeRecord
   return invoke<FileTreeNodeRecord[]>("list_project_tree", { root });
 }
 
-export async function readProjectFile(path: string): Promise<TextFilePreviewRecord> {
+export async function readProjectFile(path: string, allowedRoots: string[] = []): Promise<TextFilePreviewRecord> {
   if (!isTauriRuntime()) {
     throw new Error("File preview is only available in the desktop app.");
   }
 
-  return invoke<TextFilePreviewRecord>("read_text_file", { path });
+  return invoke<TextFilePreviewRecord>("read_text_file", { path, allowedRoots });
 }
 
 export async function writeProjectFile(path: string, content: string, allowedRoots?: string[]): Promise<TextFilePreviewRecord> {

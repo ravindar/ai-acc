@@ -14,9 +14,7 @@ import {
   type SendInputReq,
   type StartSessionReq,
 } from "@acc/adapter-sdk";
-
-// Pricing last verified: 2026-04-03. Check provider docs if costs look wrong.
-const MODEL_PRICING_UPDATED_AT = "2026-04-03";
+import { getPricing } from "@acc/pricing";
 
 async function withRetry<T>(
   fn: () => Promise<T>,
@@ -140,37 +138,6 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 function roundCurrency(value: number): number {
   return Math.round(value * 1_000_000) / 1_000_000;
-}
-
-function getPricing(model: string): { inputPerMillion: number; outputPerMillion: number } | null {
-  const normalizedModel = model.trim().toLowerCase();
-
-  if (normalizedModel.includes("opus-4-1") || normalizedModel === "opus" || normalizedModel.includes("opus")) {
-    return {
-      inputPerMillion: 15,
-      outputPerMillion: 75,
-    };
-  }
-
-  if (
-    normalizedModel.includes("sonnet-4-5") ||
-    normalizedModel === "sonnet" ||
-    normalizedModel.includes("sonnet")
-  ) {
-    return {
-      inputPerMillion: 3,
-      outputPerMillion: 15,
-    };
-  }
-
-  if (normalizedModel.includes("haiku-4-5") || normalizedModel.includes("haiku")) {
-    return {
-      inputPerMillion: 1,
-      outputPerMillion: 5,
-    };
-  }
-
-  return null;
 }
 
 function buildSystemPrompt(session: ClaudeSession): string | undefined {

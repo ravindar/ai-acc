@@ -600,35 +600,70 @@ function summarizeActionRequestForBrief(request: CoordinationActionRequestRecord
   return `${prefix} — ${request.agentTitle}: ${request.summary}`.trim();
 }
 
-async function loadLatestRunContext(
+/**
+ * Batch-load the latest run context for all agents in 2 queries instead of N×6.
+ * Returns a Map keyed by agentId with the same shape as the old per-agent loader.
+ */
+async function loadLatestRunContextBatch(
   repositories: Repositories,
-  agent: AgentSessionRecord,
-): Promise<{
-  latestRun: AgentRunRecord | null;
-  latestTranscriptEntry: TranscriptEntryRecord | null;
-}> {
-  const runs = await repositories.runs.listByAgent(agent.id);
-  const latestRun = runs[0] ?? null;
+  agents: AgentSessionRecord[],
+): Promise<
+  Map<string, { latestRun: AgentRunRecord | null; latestTranscriptEntry: TranscriptEntryRecord | null }>
+> {
+  const agentIds = agents.map((a) => a.id);
+  const allRuns = await repositories.runs.listLatestBatchForAgents(agentIds, 6);
 
-  for (const run of runs.slice(0, 6)) {
-    const transcript = await repositories.transcript.listByRun(run.id);
-    const latestTranscriptEntry =
-      [...transcript]
-        .reverse()
-        .find((entry) => entry.entryType === "assistant" || entry.entryType === "error") ?? null;
+  // Group runs by agentId (already ordered created_at DESC within each agent)
+  const runsByAgent = new Map<string, AgentRunRecord[]>();
+  for (const run of allRuns) {
+    const group = runsByAgent.get(run.agentId) ?? [];
+    group.push(run);
+    runsByAgent.set(run.agentId, group);
+  }
 
-    if (latestTranscriptEntry) {
-      return {
-        latestRun: run,
-        latestTranscriptEntry,
-      };
+  // Collect all runIds so we can batch-load transcripts
+  const allRunIds = allRuns.map((r) => r.id);
+  const allTranscript = await repositories.transcript.listLatestBatchForRuns(allRunIds, 100);
+
+  // Group transcript entries by runId
+  const transcriptByRun = new Map<string, TranscriptEntryRecord[]>();
+  for (const entry of allTranscript) {
+    const group = transcriptByRun.get(entry.runId) ?? [];
+    group.push(entry);
+    transcriptByRun.set(entry.runId, group);
+  }
+
+  // Build per-agent results matching the old loadLatestRunContext shape
+  const result = new Map<
+    string,
+    { latestRun: AgentRunRecord | null; latestTranscriptEntry: TranscriptEntryRecord | null }
+  >();
+
+  for (const agent of agents) {
+    const runs = runsByAgent.get(agent.id) ?? [];
+    const latestRun = runs[0] ?? null;
+    let found = false;
+
+    for (const run of runs) {
+      const transcript = transcriptByRun.get(run.id) ?? [];
+      const latestTranscriptEntry =
+        [...transcript]
+          .reverse()
+          .find((entry) => entry.entryType === "assistant" || entry.entryType === "error") ?? null;
+
+      if (latestTranscriptEntry) {
+        result.set(agent.id, { latestRun: run, latestTranscriptEntry });
+        found = true;
+        break;
+      }
+    }
+
+    if (!found) {
+      result.set(agent.id, { latestRun, latestTranscriptEntry: null });
     }
   }
 
-  return {
-    latestRun,
-    latestTranscriptEntry: null,
-  };
+  return result;
 }
 
 async function collectCoordinationSignals(
@@ -645,15 +680,15 @@ async function collectCoordinationSignals(
   /** Transcript content for each WAITING_INPUT agent — used for batch LLM synthesis. */
   waitingAgentInputs: WaitingAgentInput[];
 }> {
-  const [approvals, latestRunContexts] = await Promise.all([
+  const [approvals, latestRunContextMap] = await Promise.all([
     repositories.approvals.listPending(workspace.id),
-    Promise.all(
-      agents.map(async (agent) => ({
-        agent,
-        ...(await loadLatestRunContext(repositories, agent)),
-      })),
-    ),
+    loadLatestRunContextBatch(repositories, agents),
   ]);
+
+  const latestRunContexts = agents.map((agent) => ({
+    agent,
+    ...(latestRunContextMap.get(agent.id) ?? { latestRun: null, latestTranscriptEntry: null }),
+  }));
 
   const agentTitleById = new Map(agents.map((agent) => [agent.id, agent.title]));
   const findingSummaries: CoordinationFindingSummaryRecord[] = [];
@@ -1374,7 +1409,7 @@ export function createCoordinationService(repositories: Repositories): Coordinat
       // This replaces the heuristic/count-based summary with the LLM's concise,
       // specific description of what all agents collectively need from the operator.
       if (teamAsk && synthesizedTeamSummary) {
-        teamAsk = { ...teamAsk, summary: synthesizedTeamSummary };
+        teamAsk = { ...teamAsk, summary: synthesizedTeamSummary, synthesized: true };
       }
 
       // Keep teamAskHistory head in sync with the enriched teamAsk

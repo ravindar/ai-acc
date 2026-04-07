@@ -14,9 +14,7 @@ import {
   type SendInputReq,
   type StartSessionReq,
 } from "@acc/adapter-sdk";
-
-// Pricing last verified: 2026-04-03. Check provider docs if costs look wrong.
-const MODEL_PRICING_UPDATED_AT = "2026-04-03";
+import { getPricing } from "@acc/pricing";
 
 async function withRetry<T>(
   fn: () => Promise<T>,
@@ -122,26 +120,6 @@ function toNumber(value: unknown): number {
 
 function roundCurrency(value: number): number {
   return Math.round(value * 1_000_000) / 1_000_000;
-}
-
-function getPricing(model: string): { inputPerMillion: number; outputPerMillion: number } | null {
-  const normalizedModel = model.trim().toLowerCase();
-
-  if (normalizedModel.startsWith("gpt-5.2-codex")) {
-    return {
-      inputPerMillion: 1.75,
-      outputPerMillion: 14,
-    };
-  }
-
-  if (normalizedModel.startsWith("gpt-5-codex")) {
-    return {
-      inputPerMillion: 1.25,
-      outputPerMillion: 10,
-    };
-  }
-
-  return null;
 }
 
 function buildInstructions(session: CodexSession): string | undefined {

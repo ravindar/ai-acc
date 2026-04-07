@@ -8,11 +8,53 @@ import {
   type AgentEvent,
   type SendInputResult,
 } from "@acc/adapter-sdk";
+import { getContextWindow } from "@acc/pricing";
 import type { AgentSessionRecord, AgentState, ContextItemRecord, ProviderId, WorkspaceRecord } from "@acc/shared-types";
 
 import type { CoordinationService } from "./coordination-state.js";
 import type { EventService } from "./events/service.js";
 import type { Repositories } from "./repositories.js";
+
+// Fallback context window limits when pricing lookup fails (chars = tokens × ~4)
+const PROVIDER_CONTEXT_CHARS: Record<string, number> = {
+  claude: 200_000 * 4,   // 200k tokens
+  codex: 32_000 * 4,     // 32k tokens
+  mock: 100_000 * 4,
+};
+
+function getContextCharLimit(provider: string, model: string): number {
+  const fromPricing = getContextWindow(model, 0);
+  if (fromPricing > 0) return fromPricing * 4;
+  return PROVIDER_CONTEXT_CHARS[provider] ?? 32_000 * 4;
+}
+
+function truncateContextItems(
+  items: Array<{ id: string; type: ContextItemRecord["type"]; value: string }>,
+  charLimit: number,
+): Array<{ id: string; type: ContextItemRecord["type"]; value: string }> {
+  const totalChars = items.reduce((sum, i) => sum + i.value.length, 0);
+  const limit = Math.floor(charLimit * 0.8);
+  if (totalChars <= limit) return items;
+
+  // Priority: items with these id suffixes are dropped first (index 0 = lowest priority)
+  const DROP_ORDER = [
+    ":workspace-memory",
+    ":shared-context-kv",
+    ":coordination-brief",
+    ":coordination-agent-brief",
+    ":private-memory",
+    ":unread-messages",
+    ":shared-context",
+  ];
+
+  let remaining = [...items];
+  for (const suffix of DROP_ORDER) {
+    if (remaining.reduce((s, i) => s + i.value.length, 0) <= limit) break;
+    remaining = remaining.filter((i) => !i.id.endsWith(suffix));
+  }
+
+  return remaining;
+}
 
 type LoggerLike = Pick<Console, "error" | "info" | "warn">;
 
@@ -199,10 +241,13 @@ async function loadRuntimeContext(
     })),
   );
 
+  const charLimit = getContextCharLimit(agent.provider, agent.model);
+  const truncatedItems = truncateContextItems(contextItems, charLimit);
+
   return {
     workspace,
     cwd: cwdFromMetadata(agent) ?? workspace?.projectRoot ?? undefined,
-    contextItems,
+    contextItems: truncatedItems,
   };
 }
 

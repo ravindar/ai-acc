@@ -809,16 +809,26 @@ export function createRunOrchestrator(
       }
 
       const pending = await repositories.approvals.listPending();
+      const ONE_HOUR_MS = 60 * 60 * 1_000;
+      let staleDenied = 0;
       for (const approval of pending) {
-        await repositories.approvals.resolve(
-          approval.id,
-          "DENIED",
-          "The embedded control plane restarted before this approval could be completed.",
-        );
+        const ageMs = Date.now() - new Date(approval.createdAt).getTime();
+        if (ageMs >= ONE_HOUR_MS) {
+          await repositories.approvals.resolve(
+            approval.id,
+            "DENIED",
+            "The embedded control plane restarted and this approval was pending for over an hour.",
+          );
+          staleDenied += 1;
+        }
+        // Recent approvals (<1 h) are left PENDING so the operator can review them in the UI.
       }
 
       if (recovered > 0) {
         logger.warn(`marked ${recovered} interrupted run(s) as errored after restart`);
+      }
+      if (staleDenied > 0) {
+        logger.warn(`auto-denied ${staleDenied} stale approval request(s) older than 1 hour`);
       }
 
       return recovered;

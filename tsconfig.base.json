@@ -32,6 +32,9 @@
       ],
       "@acc/ui-kit": [
         "packages/ui-kit/src/index.ts"
+      ],
+      "@acc/pricing": [
+        "packages/pricing/src/index.ts"
       ]
     }
   }

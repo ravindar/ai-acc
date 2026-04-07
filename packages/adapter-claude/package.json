@@ -12,7 +12,8 @@
     "lint": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@acc/adapter-sdk": "workspace:*"
+    "@acc/adapter-sdk": "workspace:*",
+    "@acc/pricing": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.10.2"

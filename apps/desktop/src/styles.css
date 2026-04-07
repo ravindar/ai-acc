@@ -3633,6 +3633,64 @@ code {
   }
 }
 
+/* Phase 16: Operator Visibility badges */
+
+.agent-dep-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  background: rgba(212,164,55,0.15);
+  color: var(--warning);
+  border: 1px solid rgba(212,164,55,0.3);
+  margin-left: 4px;
+}
+
+.approval-overdue-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(224,108,108,0.12);
+  color: var(--danger);
+  border: 1px solid rgba(224,108,108,0.25);
+  margin-left: 6px;
+}
+
+.synthesis-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(91,163,219,0.12);
+  color: var(--info);
+  border: 1px solid rgba(91,163,219,0.25);
+  margin-left: 6px;
+}
+.synthesis-badge::before { content: "✦"; font-size: 9px; }
+
+.context-budget-indicator {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  background: rgba(91,163,219,0.08);
+  color: var(--muted);
+  border: 1px solid rgba(91,163,219,0.18);
+  margin-left: 4px;
+  cursor: default;
+}
+
 [data-theme="dark"] {
   color-scheme: dark;
   --bg: #0e0e0e;
@@ -3658,6 +3716,7 @@ code {
   --tone-terminal: rgba(212,164,55,0.10);
   --tone-artifacts: rgba(76,175,130,0.10);
   --tone-explorer: rgba(91,163,219,0.08);
+  .agent-dep-badge { background: rgba(212,164,55,0.20); }
 }
 
 [data-theme="dark"] body {

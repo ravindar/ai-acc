@@ -817,6 +817,15 @@ const embeddedMigrations: readonly EmbeddedMigration[] = [
         `ALTER TABLE handoff_items ADD COLUMN auto_assign INTEGER NOT NULL DEFAULT 0`);
     },
   },
+  {
+    name: "0011_batch_query_indexes.sql",
+    apply: async (db) => {
+      await db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_runs_agent_created ON agent_runs(agent_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_transcript_run_seq ON transcript_entries(run_id, seq ASC);
+      `);
+    },
+  },
 ] as const;
 
 type LoggerLike = Pick<Console, "info" | "warn" | "error">;
