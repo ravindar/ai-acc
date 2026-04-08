@@ -1384,21 +1384,25 @@ export function createCoordinationService(repositories: Repositories): Coordinat
       const { executionPlan, blockedAgents } = buildExecutionPlan(built, built.agentBriefs);
 
       // Carry-forward: if no fresh team ask was generated (agents not currently WAITING_INPUT,
-      // e.g. after a restart that marked them ERROR), preserve the existing persisted ask so
-      // the card stays visible. Only discard it when:
+      // e.g. after a restart that marked them ERROR), preserve the last known ask so the card
+      // stays visible. Fall back to teamAskHistory[0] if teamAsk was already cleared in a
+      // previous session (e.g. deployed before carry-forward existed).
+      // Only discard when:
       //   (a) a new prompt round has started (user already responded), OR
       //   (b) the operator explicitly dismissed it.
       let teamAsk = built.teamAsk;
-      if (!teamAsk && existingState?.teamAsk && !existingState.teamAsk.dismissed) {
-        const existing = existingState.teamAsk;
-        const currentPromptId = options?.currentPromptId;
-        const newPromptStarted =
-          currentPromptId !== undefined &&
-          currentPromptId !== null &&
-          existing.promptId !== undefined &&
-          existing.promptId !== currentPromptId;
-        if (!newPromptStarted) {
-          teamAsk = existing;
+      if (!teamAsk) {
+        const carryFrom = existingState?.teamAsk ?? existingState?.teamAskHistory?.[0] ?? null;
+        if (carryFrom && !carryFrom.dismissed) {
+          const currentPromptId = options?.currentPromptId;
+          const newPromptStarted =
+            currentPromptId !== undefined &&
+            currentPromptId !== null &&
+            carryFrom.promptId !== undefined &&
+            carryFrom.promptId !== currentPromptId;
+          if (!newPromptStarted) {
+            teamAsk = carryFrom;
+          }
         }
       }
 
