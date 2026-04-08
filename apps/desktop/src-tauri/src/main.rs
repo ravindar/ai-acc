@@ -10,6 +10,7 @@ use std::{
     thread,
     time::Duration,
 };
+use std::fs::OpenOptions;
 
 use serde::{Deserialize, Serialize};
 use tauri::{path::BaseDirectory, Manager, RunEvent, Runtime};
@@ -42,6 +43,7 @@ struct ControlPlaneLaunch {
 struct ProviderSettings {
     openai_api_key: Option<String>,
     anthropic_api_key: Option<String>,
+    coordination_api_key: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -49,6 +51,7 @@ struct ProviderSettings {
 struct ProviderSettingsStatus {
     openai_configured: bool,
     anthropic_configured: bool,
+    coordination_configured: bool,
     applied_to_embedded_control_plane: bool,
 }
 
@@ -57,8 +60,10 @@ struct ProviderSettingsStatus {
 struct SaveProviderSettingsRequest {
     openai_api_key: Option<String>,
     anthropic_api_key: Option<String>,
+    coordination_api_key: Option<String>,
     clear_openai: bool,
     clear_anthropic: bool,
+    clear_coordination: bool,
 }
 
 #[derive(Serialize)]
@@ -267,6 +272,7 @@ fn load_provider_settings<R: Runtime>(app: &tauri::AppHandle<R>) -> io::Result<P
     let mut settings = ProviderSettings {
         openai_api_key: read_keychain_secret(&provider_keychain_account("openai"))?,
         anthropic_api_key: read_keychain_secret(&provider_keychain_account("anthropic"))?,
+        coordination_api_key: read_keychain_secret(&provider_keychain_account("coordination"))?,
     };
     let legacy = load_legacy_provider_settings(app).unwrap_or_default();
     let mut migrated = false;
@@ -316,6 +322,15 @@ fn persist_provider_settings<R: Runtime>(
         )?;
     } else {
         delete_keychain_secret(&provider_keychain_account("anthropic"))?;
+    }
+
+    if let Some(coordination_api_key) = settings.coordination_api_key.as_deref() {
+        write_keychain_secret(
+            &provider_keychain_account("coordination"),
+            coordination_api_key,
+        )?;
+    } else {
+        delete_keychain_secret(&provider_keychain_account("coordination"))?;
     }
 
     delete_legacy_provider_settings(app)?;
@@ -425,6 +440,7 @@ fn provider_settings_status(
     ProviderSettingsStatus {
         openai_configured: settings.openai_api_key.is_some(),
         anthropic_configured: settings.anthropic_api_key.is_some(),
+        coordination_configured: settings.coordination_api_key.is_some(),
         applied_to_embedded_control_plane,
     }
 }
@@ -470,10 +486,22 @@ fn start_control_plane<R: Runtime>(app: &tauri::AppHandle<R>) -> io::Result<Cont
         command.env("ANTHROPIC_API_KEY", anthropic_api_key);
     }
 
-    if cfg!(debug_assertions) {
-        command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
-    } else {
-        command.stdout(Stdio::null()).stderr(Stdio::null());
+    if let Some(coordination_api_key) = provider_settings.coordination_api_key.as_deref() {
+        command.env("ACC_COORDINATION_KEY", coordination_api_key);
+    }
+
+    // Always write control-plane output to a log file so diagnostics are accessible.
+    let log_path = storage_dir.join("control-plane.log");
+    match OpenOptions::new().create(true).append(true).open(&log_path) {
+        Ok(log_file) => {
+            let log_file2 = log_file.try_clone().unwrap_or_else(|_| {
+                OpenOptions::new().create(true).append(true).open(&log_path).unwrap()
+            });
+            command.stdout(Stdio::from(log_file)).stderr(Stdio::from(log_file2));
+        }
+        Err(_) => {
+            command.stdout(Stdio::null()).stderr(Stdio::null());
+        }
     }
 
     let mut child = command.spawn()?;
@@ -634,6 +662,12 @@ fn save_provider_settings(
         settings.anthropic_api_key = None;
     } else if let Some(anthropic_api_key) = normalize_secret(request.anthropic_api_key) {
         settings.anthropic_api_key = Some(anthropic_api_key);
+    }
+
+    if request.clear_coordination {
+        settings.coordination_api_key = None;
+    } else if let Some(coordination_api_key) = normalize_secret(request.coordination_api_key) {
+        settings.coordination_api_key = Some(coordination_api_key);
     }
 
     persist_provider_settings(&app, &settings).map_err(|error| error.to_string())?;

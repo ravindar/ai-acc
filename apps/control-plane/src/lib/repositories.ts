@@ -242,6 +242,7 @@ type CoordinationStateRow = QueryResultRow & {
   reply_packets: string | null;
   team_ask_history: string | null;
   current_prompt_id: string | null;
+  coordinator_usage: string | null;
 };
 
 function toIsoString(value: TimestampValue): string {
@@ -1067,6 +1068,10 @@ function mapCoordinationState(row: CoordinationStateRow): CoordinationStateRecor
     replyPackets: parseCoordinationReplyPackets(row.reply_packets),
     teamAskHistory: parseCoordinationTeamAskHistory(row.team_ask_history),
     currentPromptId: row.current_prompt_id ?? null,
+    coordinatorUsage: (() => {
+      try { return row.coordinator_usage ? (JSON.parse(row.coordinator_usage) as CoordinationStateRecord["coordinatorUsage"]) : undefined; }
+      catch { return undefined; }
+    })(),
   };
 }
 
@@ -1758,7 +1763,7 @@ export function createRepositories(db: Database): Repositories {
         const result = await db.query<CoordinationStateRow>(
           `select workspace_id, brief, agent_briefs, handoff_summaries, finding_summaries, action_requests, team_ask,
                   dependency_graph, execution_plan, blocked_agents, coordinator_decisions, reply_packets, team_ask_history,
-                  current_prompt_id, created_at, updated_at
+                  current_prompt_id, coordinator_usage, created_at, updated_at
            from workspace_coordination_states
            where workspace_id = ?`,
           [workspaceId],
@@ -1773,8 +1778,8 @@ export function createRepositories(db: Database): Repositories {
           `insert into workspace_coordination_states (
             workspace_id, brief, agent_briefs, handoff_summaries, finding_summaries, action_requests, team_ask,
             dependency_graph, execution_plan, blocked_agents, coordinator_decisions, reply_packets, team_ask_history,
-            current_prompt_id, created_at, updated_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            current_prompt_id, coordinator_usage, created_at, updated_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           on conflict(workspace_id) do update set
             brief = excluded.brief,
             agent_briefs = excluded.agent_briefs,
@@ -1789,6 +1794,7 @@ export function createRepositories(db: Database): Repositories {
             reply_packets = excluded.reply_packets,
             team_ask_history = excluded.team_ask_history,
             current_prompt_id = excluded.current_prompt_id,
+            coordinator_usage = excluded.coordinator_usage,
             updated_at = excluded.updated_at`,
           [
             state.workspaceId,
@@ -1805,6 +1811,7 @@ export function createRepositories(db: Database): Repositories {
             JSON.stringify(state.replyPackets),
             JSON.stringify(state.teamAskHistory),
             state.currentPromptId,
+            state.coordinatorUsage ? JSON.stringify(state.coordinatorUsage) : null,
             now,
             now,
           ],

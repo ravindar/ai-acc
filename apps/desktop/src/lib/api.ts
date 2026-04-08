@@ -78,6 +78,7 @@ export function getControlPlaneBaseUrl(): string {
 export interface ProviderSettingsStatus {
   openaiConfigured: boolean;
   anthropicConfigured: boolean;
+  coordinationConfigured: boolean;
   appliedToEmbeddedControlPlane: boolean;
 }
 
@@ -506,6 +507,7 @@ export async function fetchProviderSettings(): Promise<ProviderSettingsStatus> {
     return {
       openaiConfigured: false,
       anthropicConfigured: false,
+      coordinationConfigured: false,
       appliedToEmbeddedControlPlane: false,
     };
   }
@@ -528,8 +530,10 @@ export async function fetchControlPlaneRuntimeStatus(): Promise<ControlPlaneRunt
 export async function saveProviderSettings(input: {
   openaiApiKey?: string;
   anthropicApiKey?: string;
+  coordinationApiKey?: string;
   clearOpenai?: boolean;
   clearAnthropic?: boolean;
+  clearCoordination?: boolean;
 }): Promise<ProviderSettingsStatus> {
   if (!isTauriRuntime()) {
     throw new Error("Provider settings are only available in the desktop app.");

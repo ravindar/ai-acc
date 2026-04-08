@@ -24,7 +24,7 @@ import type {
 
 import { createId } from "./ids.js";
 import type { Repositories } from "./repositories.js";
-import { synthesizeTeamStatus } from "./coordination-synthesizer.js";
+import { synthesizeTeamStatus, lastSynthesisWarning, calcSynthesisCost } from "./coordination-synthesizer.js";
 import type { WaitingAgentInput } from "./coordination-synthesizer.js";
 
 function normalizeLabel(value: string | undefined): string {
@@ -134,14 +134,42 @@ function extractLastStatement(value: string | undefined): string | null {
 
   const paragraphs = normalized.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
 
-  for (let i = paragraphs.length - 1; i >= 0; i--) {
-    const para = paragraphs[i]!;
-    // Skip code blocks, pure bullet lists, and markdown headers — show prose instead.
-    if (para.startsWith("```") || /^#{1,6}\s/.test(para)) continue;
-    // If paragraph is mostly bullets, try to grab a leading sentence instead.
+  // Helper: is a paragraph usable prose (not a code block, header, or pure bullets)?
+  function prosify(para: string): string | null {
+    if (para.startsWith("```") || /^#{1,6}\s/.test(para)) return null;
     const stripped = para.replace(/^[-*•]\s.*/gm, "").trim();
     const prose = stripped.length > 30 ? stripped : para;
-    if (prose.length > 20) return truncateText(prose, 500);
+    return prose.length > 20 ? prose : null;
+  }
+
+  // Conclusion starters — these are endings, not asks.
+  const conclusionRe =
+    /^(by focusing|in (summary|conclusion|closing)|overall,|to summarize|in short,|this (approach|process|framework|setup)|together,|with (these|this)|following these)/i;
+
+  // Pass 1: find a paragraph that contains a real question mark.
+  for (let i = paragraphs.length - 1; i >= 0; i--) {
+    const prose = prosify(paragraphs[i]!);
+    if (prose && prose.includes("?")) return truncateText(prose, 500);
+  }
+
+  // Pass 2: find a paragraph starting with an explicit ask phrase.
+  const askRe =
+    /^(let me know|would you (like|prefer|want)|please (let|tell|share|confirm|provide)|should (i|we)|can (you|i|we)|do you (want|need|have)|are you|what (would|do|should)|which (would|do|should)|if you('d| would)|feel free)/i;
+  for (let i = paragraphs.length - 1; i >= 0; i--) {
+    const prose = prosify(paragraphs[i]!);
+    if (prose && askRe.test(prose)) return truncateText(prose, 500);
+  }
+
+  // Pass 3: last non-conclusion paragraph.
+  for (let i = paragraphs.length - 1; i >= 0; i--) {
+    const prose = prosify(paragraphs[i]!);
+    if (prose && !conclusionRe.test(prose)) return truncateText(prose, 500);
+  }
+
+  // Pass 4: anything.
+  for (let i = paragraphs.length - 1; i >= 0; i--) {
+    const prose = prosify(paragraphs[i]!);
+    if (prose) return truncateText(prose, 500);
   }
   return null;
 }
@@ -820,10 +848,12 @@ async function collectCoordinationSignals(
     if (agent.state === "WAITING_INPUT") {
       // Use the full concatenated assistant output for extraction — not just the last chunk.
       const fullContent = fullAssistantContent || latestTranscriptEntry?.content || "";
-      // Use heuristic as a fast initial summary. The batch LLM synthesis in
-      // refreshWorkspaceState will overwrite this with a better message.
+      // Use the agent's last substantive paragraph as a fallback summary. The batch LLM
+      // synthesis in refreshWorkspaceState will overwrite this with a proper extracted ask.
+      // We intentionally skip the brittle question-pattern heuristic here — if synthesis
+      // is unavailable (no API key), the last paragraph is far more informative than a
+      // partial pattern match like "Let me know if you want:".
       const heuristicAsk =
-        extractActionRequestFromText(fullContent) ??
         extractLastStatement(fullContent) ??
         `${agent.title} has paused and is waiting for your next instruction.`;
 
@@ -848,6 +878,32 @@ async function collectCoordinationSignals(
         agentTitle: agent.title,
         agentRole: agentRoleMap.get(agent.id),
         transcriptContent: fullContent,
+      });
+    }
+
+    // For agents in ERROR state, add a needs_input action request so they surface in the
+    // team ask card with a "Focus & retry" button. Without this, ERROR agents are invisible
+    // in the guidance card — the operator has to scroll through thread history to find them.
+    if (agent.state === "ERROR") {
+      const errMsg = latestRun?.errorMessage?.trim() ?? "";
+      const isRateLimit = /rate.?limit|429|tokens per min/i.test(errMsg);
+      const errorSummary = isRateLimit
+        ? "API rate limit reached. Wait a moment and retry this agent."
+        : errMsg
+          ? (summarizeText(errMsg, 200) || "Encountered an error and needs attention.")
+          : "Encountered an error and needs attention.";
+
+      actionRequests.push({
+        id: `coord-needs-input-${agent.id}-${latestRun?.id ?? "error"}-error`,
+        workspaceId: workspace.id,
+        agentId: agent.id,
+        agentTitle: agent.title,
+        runId: latestRun?.id,
+        kind: "needs_input",
+        title: `${agent.title} encountered an error`,
+        summary: errorSummary,
+        detail: errMsg ? truncateText(errMsg, 1200) : undefined,
+        updatedAt: latestRun?.completedAt ?? latestRun?.updatedAt ?? updatedAt,
       });
     }
   }
@@ -1059,6 +1115,7 @@ function buildCoordinationState(input: {
     replyPackets: input.existingState?.replyPackets ?? [],
     teamAskHistory,
     currentPromptId,
+    coordinatorUsage: input.existingState?.coordinatorUsage,
   };
 }
 
@@ -1348,9 +1405,15 @@ export function createCoordinationService(repositories: Repositories): Coordinat
 
       // Batch LLM synthesis: send ALL waiting agent outputs in one call.
       // The model reads them together and produces a coherent team summary + per-agent asks.
+      // Synthesis is cached per team-ask ID + agent set — only runs once per prompt round.
       let synthesizedTeamSummary: string | null = null;
+      let synthesisInputTokens = 0;
+      let synthesisOutputTokens = 0;
       if (waitingAgentInputs.length > 0) {
+        const promptId = options?.currentPromptId ?? existingState?.currentPromptId ?? "default";
+        const teamAskId = `coord-team-ask-${workspace.id}-${promptId}`;
         const synthesis = await synthesizeTeamStatus(
+          teamAskId,
           waitingAgentInputs,
           brief?.task,
         );
@@ -1365,6 +1428,8 @@ export function createCoordinationService(repositories: Repositories): Coordinat
             }
           }
           synthesizedTeamSummary = synthesis.teamSummary;
+          synthesisInputTokens = synthesis.inputTokens;
+          synthesisOutputTokens = synthesis.outputTokens;
         }
       }
 
@@ -1424,8 +1489,21 @@ export function createCoordinationService(repositories: Repositories): Coordinat
       // This replaces the heuristic/count-based summary with the LLM's concise,
       // specific description of what all agents collectively need from the operator.
       if (teamAsk && synthesizedTeamSummary) {
-        teamAsk = { ...teamAsk, summary: synthesizedTeamSummary, synthesized: true };
+        teamAsk = { ...teamAsk, summary: synthesizedTeamSummary, synthesized: true, synthesisWarning: undefined };
+      } else if (teamAsk && lastSynthesisWarning) {
+        teamAsk = { ...teamAsk, synthesisWarning: lastSynthesisWarning };
       }
+
+      // Accumulate coordinator token usage — only when synthesis actually made an API call.
+      const prevUsage = built.coordinatorUsage ?? { inputTokens: 0, outputTokens: 0, costUsd: 0, callCount: 0 };
+      const coordinatorUsage = (synthesisInputTokens > 0 || synthesisOutputTokens > 0)
+        ? {
+            inputTokens: prevUsage.inputTokens + synthesisInputTokens,
+            outputTokens: prevUsage.outputTokens + synthesisOutputTokens,
+            costUsd: prevUsage.costUsd + calcSynthesisCost(synthesisInputTokens, synthesisOutputTokens),
+            callCount: prevUsage.callCount + 1,
+          }
+        : prevUsage;
 
       // Keep teamAskHistory head in sync with the enriched teamAsk
       const teamAskHistory =
@@ -1433,7 +1511,7 @@ export function createCoordinationService(repositories: Repositories): Coordinat
           ? [teamAsk, ...built.teamAskHistory.slice(1)].slice(0, 20)
           : built.teamAskHistory;
 
-      const state = { ...built, executionPlan, blockedAgents, teamAsk, teamAskHistory };
+      const state = { ...built, executionPlan, blockedAgents, teamAsk, teamAskHistory, coordinatorUsage };
 
       return repositories.coordination.upsert(state);
     },

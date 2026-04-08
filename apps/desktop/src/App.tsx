@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { agentStateMeta, usageFormatters } from "@acc/ui-kit";
@@ -1476,6 +1476,7 @@ export function App() {
   const [streamConnected, setStreamConnected] = useState(false);
   const [openaiApiKey, setOpenaiApiKey] = useState("");
   const [anthropicApiKey, setAnthropicApiKey] = useState("");
+  const [coordinationApiKey, setCoordinationApiKey] = useState("");
   const [selectedAgentId, setSelectedAgentId] = useState("");
   const [workspaceFocusedAgentId, setWorkspaceFocusedAgentId] = useState("");
   const [selectedRunId, setSelectedRunId] = useState("");
@@ -1542,6 +1543,29 @@ export function App() {
   const workspaceConversationStreamRef = useRef<HTMLDivElement | null>(null);
   const workspaceShouldAutoScrollRef = useRef(true);
   const workspaceScrollHeightRef = useRef(0);
+  // True while a programmatic scroll is in-flight — suppresses the scroll listener
+  // so it doesn't incorrectly set workspaceShouldAutoScrollRef to false mid-animation.
+  const workspaceIsProgrammaticScrollRef = useRef(false);
+  const workspaceScrollListenerCleanupRef = useRef<(() => void) | null>(null);
+  // Callback ref: attaches a scroll listener that tracks whether the user is near the bottom.
+  // Programmatic scrolls are ignored (via workspaceIsProgrammaticScrollRef) so smooth-scroll
+  // animations don't incorrectly mark the user as "scrolled away".
+  const setWorkspaceConversationContainer = useCallback((node: HTMLDivElement | null) => {
+    if (workspaceScrollListenerCleanupRef.current) {
+      workspaceScrollListenerCleanupRef.current();
+      workspaceScrollListenerCleanupRef.current = null;
+    }
+    workspaceConversationStreamRef.current = node;
+    if (node) {
+      const listener = () => {
+        if (workspaceIsProgrammaticScrollRef.current) return;
+        const nearBottom = node.scrollHeight - node.scrollTop - node.clientHeight < 300;
+        workspaceShouldAutoScrollRef.current = nearBottom;
+      };
+      node.addEventListener("scroll", listener, { passive: true });
+      workspaceScrollListenerCleanupRef.current = () => node.removeEventListener("scroll", listener);
+    }
+  }, []);
   const [terminalCommandDraft, setTerminalCommandDraft] = useState("");
   const [terminalPending, setTerminalPending] = useState(false);
   const [terminalHistory, setTerminalHistory] = useState<TerminalCommandResultRecord[]>([]);
@@ -2221,7 +2245,7 @@ export function App() {
   );
   const canSendAgentInput = Boolean(selectedAgent && agentInputDraft.trim().length > 0);
   const hasPendingSettingsChanges =
-    openaiApiKey.trim().length > 0 || anthropicApiKey.trim().length > 0;
+    openaiApiKey.trim().length > 0 || anthropicApiKey.trim().length > 0 || coordinationApiKey.trim().length > 0;
   const agentTitleMap = useMemo(
     () => new Map(agents.map((agent) => [agent.id, agent.title])),
     [agents],
@@ -2873,19 +2897,27 @@ export function App() {
     workspaceScrollHeightRef.current = newScrollHeight;
 
     const frameId = window.requestAnimationFrame(() => {
+      const c = workspaceConversationStreamRef.current;
+      if (!c) return;
+
       const activeElement = document.activeElement;
       const isEditing =
         activeElement instanceof HTMLTextAreaElement ||
         activeElement instanceof HTMLInputElement;
 
       scrollWorkspaceConversationToLatest(isEditing ? "auto" : "smooth");
-      workspaceShouldAutoScrollRef.current = false;
     });
 
     return () => {
       window.cancelAnimationFrame(frameId);
     };
   }, [homeThread.kind, workspaceConversationGroups, workspaceThreadTab]);
+  // When workspace changes, reset scroll state so the conversation always opens at the bottom.
+  useEffect(() => {
+    workspaceShouldAutoScrollRef.current = true;
+    workspaceScrollHeightRef.current = 0;
+  }, [activeWorkspaceId]);
+
   const plannerConversationItems = useMemo(
     () => [...plannerThreadEntries].sort((left, right) => Date.parse(left.ts) - Date.parse(right.ts)),
     [plannerThreadEntries],
@@ -4701,8 +4733,18 @@ export function App() {
       return;
     }
 
+    // Mark as programmatic so the scroll listener doesn't flip workspaceShouldAutoScrollRef
+    // to false while a smooth-scroll animation is in progress.
+    workspaceIsProgrammaticScrollRef.current = true;
+    window.setTimeout(
+      () => { workspaceIsProgrammaticScrollRef.current = false; },
+      behavior === "smooth" ? 600 : 50,
+    );
+
+    // Use a large top value so the browser clamps to the true bottom even if scrollHeight
+    // hasn't fully settled after a content update (avoids "half way" scrolling).
     container.scrollTo({
-      top: container.scrollHeight,
+      top: 999_999,
       behavior,
     });
   }
@@ -4768,13 +4810,16 @@ export function App() {
     await providerSettingsMutation.mutateAsync({
       openaiApiKey: openaiApiKey.trim() || undefined,
       anthropicApiKey: anthropicApiKey.trim() || undefined,
+      coordinationApiKey: coordinationApiKey.trim() || undefined,
     });
+    setCoordinationApiKey("");
   }
 
-  async function handleClearProviderSettings(provider: "openai" | "anthropic"): Promise<void> {
+  async function handleClearProviderSettings(provider: "openai" | "anthropic" | "coordination"): Promise<void> {
     await providerSettingsMutation.mutateAsync({
       clearOpenai: provider === "openai",
       clearAnthropic: provider === "anthropic",
+      clearCoordination: provider === "coordination",
     });
   }
 
@@ -6276,6 +6321,15 @@ export function App() {
             >
               Claude {providerSettings?.anthropicConfigured ? "configured" : "missing"}
             </span>
+            <span
+              className={
+                providerSettings?.coordinationConfigured
+                  ? "settings-pill settings-pill-active"
+                  : "settings-pill"
+              }
+            >
+              Coordination {providerSettings?.coordinationConfigured ? "configured" : "missing"}
+            </span>
           </div>
           {settingsAvailable ? (
             <>
@@ -6303,6 +6357,19 @@ export function App() {
                   }
                 />
               </label>
+              <label className="settings-field">
+                <span>Coordination key <small style={{opacity: 0.6}}>(Haiku synthesis — uses Claude key if not set)</small></span>
+                <input
+                  type="password"
+                  value={coordinationApiKey}
+                  onChange={(event) => setCoordinationApiKey(event.target.value)}
+                  placeholder={
+                    providerSettings?.coordinationConfigured
+                      ? "Stored. Enter a new key to replace it."
+                      : "sk-ant-... (optional, for team ask summaries)"
+                  }
+                />
+              </label>
               <div className="settings-actions">
                 <button
                   className="outline-button"
@@ -6327,6 +6394,14 @@ export function App() {
                   type="button"
                 >
                   Clear Claude
+                </button>
+                <button
+                  className="chip"
+                  disabled={!providerSettings?.coordinationConfigured || providerSettingsMutation.isPending}
+                  onClick={() => void handleClearProviderSettings("coordination")}
+                  type="button"
+                >
+                  Clear Coordination
                 </button>
               </div>
             </>
@@ -6448,6 +6523,13 @@ export function App() {
                   >
                     Claude {providerSettings?.anthropicConfigured ? "configured" : "missing"}
                   </span>
+                  <span
+                    className={
+                      providerSettings?.coordinationConfigured ? "settings-pill settings-pill-active" : "settings-pill"
+                    }
+                  >
+                    Coordination {providerSettings?.coordinationConfigured ? "configured" : "missing"}
+                  </span>
                 </div>
                 {settingsAvailable ? (
                   <>
@@ -6478,6 +6560,19 @@ export function App() {
                           }
                         />
                       </label>
+                      <label className="settings-field">
+                        <span>Coordination key <small style={{opacity: 0.6}}>(Haiku synthesis — uses Claude key if not set)</small></span>
+                        <input
+                          type="password"
+                          value={coordinationApiKey}
+                          onChange={(event) => setCoordinationApiKey(event.target.value)}
+                          placeholder={
+                            providerSettings?.coordinationConfigured
+                              ? "Stored. Enter a new key to replace it."
+                              : "sk-ant-... (optional, for team ask summaries)"
+                          }
+                        />
+                      </label>
                     </div>
                     <div className="settings-actions">
                       <button
@@ -6503,6 +6598,14 @@ export function App() {
                         type="button"
                       >
                         Clear Claude
+                      </button>
+                      <button
+                        className="outline-button"
+                        disabled={!providerSettings?.coordinationConfigured || providerSettingsMutation.isPending}
+                        onClick={() => void handleClearProviderSettings("coordination")}
+                        type="button"
+                      >
+                        Clear Coordination
                       </button>
                     </div>
                   </>
@@ -6632,6 +6735,19 @@ export function App() {
                         }
                       />
                     </label>
+                    <label className="settings-field">
+                      <span>Coordination key <small style={{opacity: 0.6}}>(Haiku synthesis — uses Claude key if not set)</small></span>
+                      <input
+                        type="password"
+                        value={coordinationApiKey}
+                        onChange={(event) => setCoordinationApiKey(event.target.value)}
+                        placeholder={
+                          providerSettings?.coordinationConfigured
+                            ? "Stored. Enter a new key to replace it."
+                            : "sk-ant-... (optional, for team ask summaries)"
+                        }
+                      />
+                    </label>
                     <div className="settings-actions">
                       <button
                         className="outline-button"
@@ -6656,6 +6772,14 @@ export function App() {
                         type="button"
                       >
                         Clear Claude
+                      </button>
+                      <button
+                        className="outline-button"
+                        disabled={!providerSettings?.coordinationConfigured || providerSettingsMutation.isPending}
+                        onClick={() => void handleClearProviderSettings("coordination")}
+                        type="button"
+                      >
+                        Clear Coordination
                       </button>
                     </div>
                   </>
@@ -7545,6 +7669,15 @@ export function App() {
                 {coordinationFindingCount} finding{coordinationFindingCount === 1 ? "" : "s"} ·{" "}
                 {coordinationActionRequestCount} request{coordinationActionRequestCount === 1 ? "" : "s"}
               </span>
+              {workspaceCoordinationState?.teamAsk?.synthesisWarning && (
+                <span
+                  className="compact-note compact-note-warning"
+                  title={workspaceCoordinationState.teamAsk.synthesisWarning}
+                  style={{ cursor: "default" }}
+                >
+                  {"⚠ Synthesis: " + workspaceCoordinationState.teamAsk.synthesisWarning}
+                </span>
+              )}
               {totalTokens > 0 && (
                 <div className="workspace-usage-popover-anchor">
                   <button
@@ -7598,6 +7731,25 @@ export function App() {
                             </div>
                           );
                         })}
+                      {(() => {
+                        const cu = workspaceCoordinationState?.coordinatorUsage;
+                        if (!cu || (cu.inputTokens + cu.outputTokens) === 0) return null;
+                        const tok = cu.inputTokens + cu.outputTokens;
+                        const tokLabel = tok >= 1_000_000 ? `${(tok / 1_000_000).toFixed(2)}M` : tok >= 1_000 ? `${(tok / 1_000).toFixed(1)}k` : `${tok}`;
+                        const inLabel = cu.inputTokens >= 1_000 ? `${(cu.inputTokens / 1_000).toFixed(1)}k` : `${cu.inputTokens}`;
+                        const outLabel = cu.outputTokens >= 1_000 ? `${(cu.outputTokens / 1_000).toFixed(1)}k` : `${cu.outputTokens}`;
+                        return (
+                          <div className="workspace-usage-dropdown-row" style={{ borderTop: "1px solid var(--line)", opacity: 0.8 }}>
+                            <span className="workspace-usage-dropdown-name" title={`Coordinator (Haiku) — ${cu.callCount} synthesis call${cu.callCount === 1 ? "" : "s"}`}>
+                              Coordinator (Haiku)
+                            </span>
+                            <span className="workspace-usage-dropdown-tokens">{tokLabel} <span className="workspace-usage-dropdown-split">({inLabel} / {outLabel})</span></span>
+                            <span className="workspace-usage-dropdown-cost">
+                              {cu.costUsd > 0 ? `$${cu.costUsd < 0.01 ? cu.costUsd.toFixed(4) : cu.costUsd.toFixed(2)}` : "—"}
+                            </span>
+                          </div>
+                        );
+                      })()}
                       <div className="workspace-usage-dropdown-total">
                         <span>Total</span>
                         <span>{totalTokens >= 1_000 ? `${(totalTokens / 1_000).toFixed(1)}k` : totalTokens}</span>
@@ -7772,7 +7924,7 @@ export function App() {
 
           {workspaceThreadTab === "conversation" ? (
             <div
-              ref={workspaceConversationStreamRef}
+              ref={setWorkspaceConversationContainer}
               className="thread-stream workspace-conversation-stream"
             >
             {workspaceConversationGroups.length > 0 ? (

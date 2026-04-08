@@ -826,6 +826,15 @@ const embeddedMigrations: readonly EmbeddedMigration[] = [
       `);
     },
   },
+  {
+    name: "0012_coordinator_usage.sql",
+    apply: async (db) => {
+      await ensureColumn(db, "workspace_coordination_states", "coordinator_usage", `
+        alter table workspace_coordination_states
+        add column coordinator_usage text
+      `);
+    },
+  },
 ] as const;
 
 type LoggerLike = Pick<Console, "info" | "warn" | "error">;
