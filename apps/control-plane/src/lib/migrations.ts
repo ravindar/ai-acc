@@ -849,6 +849,45 @@ const embeddedMigrations: readonly EmbeddedMigration[] = [
       `);
     },
   },
+  {
+    // SQLite CHECK constraints can't be altered; recreate agent_runs to add QUEUED and WAITING_INPUT states
+    name: "0014_agent_runs_queued_state.sql",
+    apply: async (db) => {
+      await db.exec(`
+        -- Rename existing table
+        ALTER TABLE agent_runs RENAME TO agent_runs_old;
+
+        -- Recreate with expanded CHECK constraint
+        CREATE TABLE agent_runs (
+          id text primary key,
+          workspace_id text not null references workspaces(id) on delete cascade,
+          agent_id text not null references agent_sessions(id) on delete cascade,
+          title text not null,
+          prompt text not null,
+          state text not null check (state in (
+            'CREATED', 'QUEUED', 'RUNNING', 'WAITING_INPUT', 'WAITING_APPROVAL',
+            'COMPLETED', 'ERROR', 'STOPPED'
+          )),
+          error_message text,
+          created_at text not null default current_timestamp,
+          updated_at text not null default current_timestamp,
+          started_at text not null default current_timestamp,
+          completed_at text
+        );
+
+        -- Copy existing data
+        INSERT INTO agent_runs SELECT * FROM agent_runs_old;
+
+        -- Drop old table (foreign key indexes will be recreated below)
+        DROP TABLE agent_runs_old;
+
+        -- Recreate indexes
+        CREATE INDEX IF NOT EXISTS idx_agent_runs_agent ON agent_runs(agent_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_agent_runs_workspace ON agent_runs(workspace_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_runs_agent_created ON agent_runs(agent_id, created_at DESC);
+      `);
+    },
+  },
 ] as const;
 
 type LoggerLike = Pick<Console, "info" | "warn" | "error">;

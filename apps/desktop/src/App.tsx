@@ -1490,6 +1490,8 @@ export function App() {
   const [workspaceProjectRootDraft, setWorkspaceProjectRootDraft] = useState("");
   const [sharedContextDraft, setSharedContextDraft] = useState("");
   const [streamConnected, setStreamConnected] = useState(false);
+  // When WebSocket stream is live, these queries are invalidated on events — back off polling to 20s
+  const streamPollMs = streamConnected ? 20_000 : 3_000;
   const [openaiApiKey, setOpenaiApiKey] = useState("");
   const [anthropicApiKey, setAnthropicApiKey] = useState("");
   const [coordinationApiKey, setCoordinationApiKey] = useState("");
@@ -1665,7 +1667,7 @@ export function App() {
     queryKey: ["workspace-overview", activeWorkspaceId],
     queryFn: () => fetchWorkspaceOverview(activeWorkspaceId),
     enabled: activeWorkspaceId.length > 0,
-    refetchInterval: 3_000,
+    refetchInterval: streamPollMs,
   });
 
   const providerSettingsQuery = useQuery({
@@ -1684,21 +1686,21 @@ export function App() {
     queryKey: ["agent-events", selectedAgentId],
     queryFn: () => fetchAgentEvents(selectedAgentId),
     enabled: selectedAgentId.length > 0,
-    refetchInterval: 3_000,
+    refetchInterval: streamPollMs,
   });
 
   const workspaceEventsQuery = useQuery({
     queryKey: ["workspace-events", activeWorkspaceId],
     queryFn: () => fetchWorkspaceEvents(activeWorkspaceId, { limit: 240 }),
     enabled: activeWorkspaceId.length > 0,
-    refetchInterval: 3_000,
+    refetchInterval: streamPollMs,
   });
 
   const agentRunsQuery = useQuery({
     queryKey: ["agent-runs", selectedAgentId],
     queryFn: () => fetchAgentRuns(selectedAgentId),
     enabled: selectedAgentId.length > 0,
-    refetchInterval: 3_000,
+    refetchInterval: streamPollMs,
   });
 
   const projectFilesQuery = useQuery({
@@ -1775,14 +1777,14 @@ export function App() {
     queryKey: ["run-transcript", selectedRunId],
     queryFn: () => fetchRunTranscript(selectedRunId),
     enabled: selectedRunId.length > 0,
-    refetchInterval: 3_000,
+    refetchInterval: streamPollMs,
   });
 
   const selectedRunToolCallsQuery = useQuery({
     queryKey: ["run-tool-calls", selectedRunId],
     queryFn: () => fetchRunToolCalls(selectedRunId),
     enabled: selectedRunId.length > 0,
-    refetchInterval: 3_000,
+    refetchInterval: streamPollMs,
   });
 
   const selectedRunArtifactsQuery = useQuery({
@@ -1796,14 +1798,14 @@ export function App() {
     queryKey: ["pending-approvals", activeWorkspaceId],
     queryFn: () => fetchPendingApprovals(activeWorkspaceId),
     enabled: activeWorkspaceId.length > 0,
-    refetchInterval: 3_000,
+    refetchInterval: streamPollMs,
   });
 
   const inboxQuery = useQuery({
     queryKey: ["workspace-inbox", activeWorkspaceId],
     queryFn: () => fetchWorkspaceInbox(activeWorkspaceId),
     enabled: activeWorkspaceId.length > 0,
-    refetchInterval: 3_000,
+    refetchInterval: streamPollMs,
   });
 
   const createWorkspaceMutation = useMutation({
@@ -1994,7 +1996,7 @@ export function App() {
       queryKey: ["agent-runs", agent.id],
       queryFn: () => fetchAgentRuns(agent.id),
       enabled: activeWorkspaceId.length > 0 && activeMenu === null && homeThread.kind === "workspace",
-      refetchInterval: 3_000,
+      refetchInterval: streamPollMs,
     })),
   });
   const workspaceAgentRunsByAgentId = useMemo(() => {
@@ -2046,7 +2048,7 @@ export function App() {
       queryKey: ["run-transcript", runId],
       queryFn: () => fetchRunTranscript(runId),
       enabled: runId.length > 0 && activeMenu === null && homeThread.kind === "workspace",
-      refetchInterval: 3_000,
+      refetchInterval: streamPollMs,
     })),
   });
   const workspaceRunTranscriptByRunId = useMemo(() => {
@@ -3191,17 +3193,12 @@ export function App() {
       return;
     }
 
-    const socket = new WebSocket(getControlPlaneStreamUrl(activeWorkspaceId));
+    let destroyed = false;
+    let retryCount = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let currentSocket: WebSocket | null = null;
 
-    socket.addEventListener("open", () => {
-      setStreamConnected(true);
-    });
-
-    socket.addEventListener("close", () => {
-      setStreamConnected(false);
-    });
-
-    socket.addEventListener("message", (event) => {
+    function handleMessage(event: MessageEvent) {
       const message = JSON.parse(event.data) as EventStreamMessage;
 
       if (message.kind !== "agent_event") {
@@ -3245,14 +3242,42 @@ export function App() {
           void queryClient.invalidateQueries({ queryKey: ["run-artifacts", selectedRunId] });
         }
       }
-    });
+    }
 
-    socket.addEventListener("error", () => {
-      setStreamConnected(false);
-    });
+    function connect() {
+      if (destroyed) return;
+      const socket = new WebSocket(getControlPlaneStreamUrl(activeWorkspaceId));
+      currentSocket = socket;
+
+      socket.addEventListener("open", () => {
+        retryCount = 0;
+        setStreamConnected(true);
+      });
+
+      socket.addEventListener("message", handleMessage);
+
+      socket.addEventListener("close", () => {
+        setStreamConnected(false);
+        if (!destroyed) {
+          // Exponential backoff: 1s, 2s, 4s, 8s, capped at 30s
+          const delay = Math.min(1000 * 2 ** retryCount, 30_000);
+          retryCount += 1;
+          retryTimer = setTimeout(connect, delay);
+        }
+      });
+
+      socket.addEventListener("error", () => {
+        setStreamConnected(false);
+        // close event will fire after error and trigger reconnect
+      });
+    }
+
+    connect();
 
     return () => {
-      socket.close();
+      destroyed = true;
+      if (retryTimer !== null) clearTimeout(retryTimer);
+      currentSocket?.close();
     };
   }, [activeWorkspaceId, queryClient, selectedAgentId, selectedRunId]);
 

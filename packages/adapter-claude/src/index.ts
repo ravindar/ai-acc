@@ -14,7 +14,7 @@ import {
   type SendInputReq,
   type StartSessionReq,
 } from "@acc/adapter-sdk";
-import { getPricing } from "@acc/pricing";
+import { getPricing, getModelCapabilities } from "@acc/pricing";
 
 async function withRetry<T>(
   fn: () => Promise<T>,
@@ -397,7 +397,7 @@ export class ClaudeAdapter implements AgentAdapter {
           body: JSON.stringify({
             model: session.model,
             system,
-            max_tokens: 4096,
+            max_tokens: getModelCapabilities(session.model)?.maxOutputTokens ?? 4096,
             messages,
             tools: toAnthropicTools(req.tools),
             tool_choice: req.tools && req.tools.length > 0 ? { type: "auto", disable_parallel_tool_use: true } : undefined,
