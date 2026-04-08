@@ -20,9 +20,43 @@ import type { WorktreeManager } from "./worktree-manager.js";
 
 const MAX_TOOL_STEPS = 12;
 const TOOL_EXECUTION_TIMEOUT_MS = 60_000; // 60 seconds
+const MAX_SEND_RETRY_ATTEMPTS = 3;
+const SEND_RETRY_BASE_DELAY_MS = 5_000; // 5s → 10s → 20s
 
 function isRateLimitError(msg: string): boolean {
   return /429|rate.?limit|tokens per min/i.test(msg);
+}
+
+function isRetryableSendError(msg: string): boolean {
+  return isRateLimitError(msg) || /ECONNREFUSED|ETIMEDOUT|fetch failed|network|socket hang/i.test(msg);
+}
+
+async function withSendRetry<T>(
+  fn: () => Promise<T>,
+  options: {
+    maxAttempts: number;
+    baseDelayMs: number;
+    onRetry: (attempt: number, delayMs: number, error: unknown) => Promise<void>;
+  },
+  logger: Pick<Console, "warn">,
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < options.maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      const msg = error instanceof Error ? error.message : String(error);
+      if (!isRetryableSendError(msg) || attempt + 1 >= options.maxAttempts) {
+        throw error;
+      }
+      const delay = options.baseDelayMs * Math.pow(2, attempt);
+      logger.warn(`[orchestrator] Retryable error (attempt ${attempt + 1}/${options.maxAttempts}): ${msg}. Retrying in ${delay}ms`);
+      await options.onRetry(attempt + 1, delay, error);
+      await new Promise<void>((resolve) => setTimeout(resolve, delay));
+    }
+  }
+  throw lastError;
 }
 
 type LoggerLike = Pick<Console, "error" | "info" | "warn">;
@@ -328,11 +362,33 @@ export function createRunOrchestrator(
 
     try {
       await setRunState(runId, "RUNNING");
-      const result = await runtimeManager.sendInput(agentId, {
-        input: request.input,
-        toolResults: request.toolResults,
-        tools: buildAdapterTools(toolDefinitions),
-      });
+      const result = await withSendRetry(
+        () => runtimeManager.sendInput(agentId, {
+          input: request.input,
+          toolResults: request.toolResults,
+          tools: buildAdapterTools(toolDefinitions),
+        }),
+        {
+          maxAttempts: MAX_SEND_RETRY_ATTEMPTS,
+          baseDelayMs: SEND_RETRY_BASE_DELAY_MS,
+          onRetry: async (attempt, delayMs, retryError) => {
+            const delaySec = Math.round(delayMs / 1000);
+            const errMsg = retryError instanceof Error ? retryError.message : String(retryError);
+            const reason = isRateLimitError(errMsg) ? "rate-limited" : "transient network error";
+            await appendTranscript({
+              id: createId("tr"),
+              runId,
+              workspaceId: active.workspaceId,
+              agentId,
+              entryType: "system",
+              content: `Provider ${reason} — retrying in ${delaySec}s (attempt ${attempt}/${MAX_SEND_RETRY_ATTEMPTS - 1})...`,
+              metadata: { retryAttempt: attempt, delayMs },
+              createdAt: new Date().toISOString(),
+            });
+          },
+        },
+        logger,
+      );
 
       const assistantText = result.assistantText?.trim() ?? "";
       if (assistantText) {
