@@ -1,4 +1,5 @@
 import cors from "@fastify/cors";
+import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
 import { refreshPricingCache } from "@acc/pricing";
 import Fastify from "fastify";
@@ -30,6 +31,15 @@ export async function createApp(services: AppServices) {
   await app.register(cors, {
     origin: ["http://127.0.0.1:7711", "http://localhost:7711", "tauri://localhost"],
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  });
+  await app.register(rateLimit, {
+    global: true,
+    max: 500,
+    timeWindow: "1 minute",
+    skipOnError: true,
+    // Skip health-check polling and WebSocket upgrade requests
+    allowList: (req) =>
+      req.url === "/health" || req.url.startsWith("/api/v1/stream"),
   });
   await app.register(websocket);
   app.setErrorHandler((error, request, reply) => {
