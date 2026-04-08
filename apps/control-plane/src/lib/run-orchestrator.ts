@@ -82,7 +82,7 @@ type ActiveRunContext = {
 export interface RunOrchestrator {
   startRun(agentId: string, prompt: string, title?: string): Promise<AgentRunRecord>;
   stopRun(runId: string): Promise<AgentRunRecord | null>;
-  approve(approvalId: string, decisionMessage?: string): Promise<ApprovalRequestRecord | null>;
+  approve(approvalId: string, decisionMessage?: string, modifiedPayload?: Record<string, unknown>): Promise<ApprovalRequestRecord | null>;
   deny(approvalId: string, decisionMessage?: string): Promise<ApprovalRequestRecord | null>;
   createAgentFromHandoff(handoffId: string): Promise<AgentSessionRecord | null>;
   assignHandoff(handoffId: string, agentId: string): Promise<HandoffItemRecord | null>;
@@ -101,6 +101,54 @@ export function createRunOrchestrator(
 ): RunOrchestrator {
   const activeRuns = new Map<string, ActiveRunContext>();
   const pendingApprovals = new Map<string, PendingApprovalContext>();
+
+  async function summarizeRunToMemory(
+    runId: string,
+    agentId: string,
+    workspaceId: string,
+    transcript: TranscriptEntryRecord[],
+  ): Promise<void> {
+    const apiKey = (process.env.ACC_COORDINATION_KEY ?? process.env.ANTHROPIC_API_KEY)?.trim();
+    if (!apiKey) return;
+    const assistantContent = transcript
+      .filter((e) => e.entryType === "assistant")
+      .map((e) => e.content)
+      .join("\n\n");
+    if (!assistantContent.trim()) return;
+    try {
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 256,
+          messages: [{ role: "user", content: `Summarize in 3 sentences what this agent accomplished:\n\n${assistantContent.slice(-6000)}` }],
+        }),
+      });
+      if (!response.ok) return;
+      const data = await response.json() as { content?: Array<{ type: string; text?: string }> };
+      const summary = data.content?.find((b) => b.type === "text")?.text?.trim();
+      if (!summary) return;
+      await repositories.memory.upsert({
+        id: createId("mem"),
+        workspaceId,
+        agentId,
+        key: "run_summary",
+        scope: "private",
+        value: summary,
+        expiresAt: null,
+        version: 1,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    } catch {
+      // fire-and-forget: ignore errors
+    }
+  }
 
   async function refreshCoordination(workspaceId: string): Promise<void> {
     try {
@@ -422,6 +470,10 @@ export function createRunOrchestrator(
         await coordinationService.onRunCompleted(lookup.workspace.id, agentId, runId, "completed");
         await resumeUnblockedAgents(lookup.workspace.id);
         activeRuns.delete(runId);
+        // Fire-and-forget: summarize completed run into agent memory
+        repositories.transcript.listByRun(runId)
+          .then(async (t) => { if (t.length >= 3) await summarizeRunToMemory(runId, agentId, lookup.workspace.id, t); })
+          .catch((err) => logger.warn(`[orchestrator] run summary failed: ${String(err)}`));
         return;
       }
 
@@ -625,7 +677,7 @@ export function createRunOrchestrator(
       throw new Error(`Approval ${approval.id} is no longer resumable.`);
     }
 
-    const [run, toolCall] = await Promise.all([
+    let [run, toolCall] = await Promise.all([
       repositories.runs.findById(pending.runId),
       repositories.toolCalls.findById(pending.toolCallId),
     ]);
@@ -667,6 +719,10 @@ export function createRunOrchestrator(
       primaryResult = { callId: providerCallId, output: { denied: true, message: decisionMessage ?? "The operator denied this tool request." }, isError: true };
     } else {
       await repositories.toolCalls.update(toolCall.id, { status: "approved" });
+      // Use modified payload if operator edited it before approving
+      if (approval.modifiedPayload && Object.keys(approval.modifiedPayload).length > 0) {
+        toolCall = { ...toolCall, input: approval.modifiedPayload };
+      }
       const { persistedToolCall, result } = await executeToolCall(run, agent, workspace, worktree, toolCall);
       primaryResult = toAdapterToolResult(persistedToolCall.providerCallId ?? providerCallId, result);
     }
@@ -818,8 +874,8 @@ export function createRunOrchestrator(
       return repositories.runs.findById(runId);
     },
 
-    async approve(approvalId, decisionMessage) {
-      const approval = await repositories.approvals.resolve(approvalId, "APPROVED", decisionMessage);
+    async approve(approvalId, decisionMessage, modifiedPayload) {
+      const approval = await repositories.approvals.resolve(approvalId, "APPROVED", decisionMessage, modifiedPayload);
 
       if (!approval) {
         return null;

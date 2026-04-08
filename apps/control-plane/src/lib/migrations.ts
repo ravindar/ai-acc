@@ -990,6 +990,17 @@ const embeddedMigrations: readonly EmbeddedMigration[] = [
       `);
     },
   },
+  {
+    name: "0016_tier2_enhancements.sql",
+    apply: async (db) => {
+      await ensureColumn(db, "artifacts", "version",
+        `ALTER TABLE artifacts ADD COLUMN version INTEGER NOT NULL DEFAULT 1`);
+      await ensureColumn(db, "artifacts", "parent_artifact_id",
+        `ALTER TABLE artifacts ADD COLUMN parent_artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL`);
+      await ensureColumn(db, "approval_requests", "modified_payload",
+        `ALTER TABLE approval_requests ADD COLUMN modified_payload TEXT`);
+    },
+  },
 ] as const;
 
 type LoggerLike = Pick<Console, "info" | "warn" | "error">;
