@@ -332,6 +332,7 @@ export function createToolBroker(
       kind,
       uri: artifactPath,
       sizeBytes: Buffer.byteLength(contents, "utf8"),
+      version: 1,
       createdAt: new Date().toISOString(),
     });
 
@@ -839,6 +840,7 @@ export function createToolBroker(
               kind: "file",
               uri: filePath,
               sizeBytes: Buffer.byteLength(content, "utf8"),
+              version: 1,
               createdAt: new Date().toISOString(),
             }).then((artifact) => artifact.id),
           ];

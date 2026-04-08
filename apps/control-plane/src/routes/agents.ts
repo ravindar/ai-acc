@@ -317,4 +317,43 @@ export async function registerAgentRoutes(app: FastifyInstance): Promise<void> {
       sessionId: session.sessionId,
     };
   });
+
+  app.patch("/agents/:id/auto-start", async (request, reply) => {
+    const params = z.object({ id: z.string() }).parse(request.params);
+    const body = z.object({
+      autoStart: z.boolean(),
+      autoStartPrompt: z.string().optional(),
+    }).parse(request.body);
+    const agent = await app.acc.repositories.agents.findById(params.id);
+
+    if (!agent) {
+      reply.code(404);
+      return { error: "Agent not found" };
+    }
+
+    const updated = await app.acc.repositories.agents.update(params.id, {
+      metadata: { autoStart: body.autoStart, autoStartPrompt: body.autoStartPrompt ?? null },
+    });
+
+    return { agent: updated };
+  });
+
+  app.patch("/agents/:id/capability", async (request, reply) => {
+    const params = z.object({ id: z.string() }).parse(request.params);
+    const body = z.object({
+      capability: z.enum(["reader", "writer", "commander", "orchestrator"]),
+    }).parse(request.body);
+    const agent = await app.acc.repositories.agents.findById(params.id);
+
+    if (!agent) {
+      reply.code(404);
+      return { error: "Agent not found" };
+    }
+
+    const updated = await app.acc.repositories.agents.update(params.id, {
+      metadata: { role: body.capability },
+    });
+
+    return { agent: updated };
+  });
 }

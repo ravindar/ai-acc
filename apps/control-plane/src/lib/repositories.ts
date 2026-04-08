@@ -125,6 +125,8 @@ type ArtifactRow = QueryResultRow & {
   kind: ArtifactRecord["kind"];
   uri: string;
   size_bytes: number | null;
+  version: number;
+  parent_artifact_id: string | null;
   created_at: string;
 };
 
@@ -181,6 +183,7 @@ type ApprovalRow = QueryResultRow & {
   requested_payload: string;
   reason: string | null;
   decision_message: string | null;
+  modified_payload: string | null;
   created_at: string;
   decided_at: string | null;
 };
@@ -956,6 +959,8 @@ function mapArtifact(row: ArtifactRow): ArtifactRecord {
     kind: row.kind,
     uri: row.uri,
     sizeBytes: row.size_bytes ?? undefined,
+    version: row.version ?? 1,
+    parentArtifactId: row.parent_artifact_id ?? undefined,
     createdAt: toIsoString(row.created_at),
   };
 }
@@ -1020,6 +1025,7 @@ function mapApproval(row: ApprovalRow): ApprovalRequestRecord {
     requestedPayload: parseJsonObject(row.requested_payload),
     reason: row.reason ?? undefined,
     decisionMessage: row.decision_message ?? undefined,
+    modifiedPayload: row.modified_payload ? parseJsonObject(row.modified_payload) : undefined,
     createdAt: toIsoString(row.created_at),
     decidedAt: row.decided_at ? toIsoString(row.decided_at) : undefined,
   };
@@ -1201,7 +1207,7 @@ export interface Repositories {
     listPending(workspaceId?: string): Promise<ApprovalRequestRecord[]>;
     findById(id: string): Promise<ApprovalRequestRecord | null>;
     create(approval: ApprovalRequestRecord): Promise<ApprovalRequestRecord>;
-    resolve(id: string, status: Exclude<ApprovalStatus, "PENDING">, decisionMessage?: string): Promise<ApprovalRequestRecord | null>;
+    resolve(id: string, status: Exclude<ApprovalStatus, "PENDING">, decisionMessage?: string, modifiedPayload?: Record<string, unknown>): Promise<ApprovalRequestRecord | null>;
   };
   handoffs: {
     listByWorkspace(workspaceId: string): Promise<HandoffItemRecord[]>;
@@ -1676,7 +1682,7 @@ export function createRepositories(db: Database): Repositories {
     approvals: {
       async listPending(workspaceId?: string): Promise<ApprovalRequestRecord[]> {
         const result = await db.query<ApprovalRow>(
-          `select id, run_id, workspace_id, agent_id, tool_call_id, status, requested_action, requested_payload, reason, decision_message, created_at, decided_at
+          `select id, run_id, workspace_id, agent_id, tool_call_id, status, requested_action, requested_payload, reason, decision_message, modified_payload, created_at, decided_at
            from approval_requests
            where status = 'PENDING' ${workspaceId ? 'and workspace_id = ?' : ''}
            order by created_at asc`,
@@ -1686,7 +1692,7 @@ export function createRepositories(db: Database): Repositories {
       },
       async findById(id: string): Promise<ApprovalRequestRecord | null> {
         const result = await db.query<ApprovalRow>(
-          `select id, run_id, workspace_id, agent_id, tool_call_id, status, requested_action, requested_payload, reason, decision_message, created_at, decided_at
+          `select id, run_id, workspace_id, agent_id, tool_call_id, status, requested_action, requested_payload, reason, decision_message, modified_payload, created_at, decided_at
            from approval_requests where id = ?`,
           [id],
         );
@@ -1715,13 +1721,13 @@ export function createRepositories(db: Database): Repositories {
         if (!refreshed) throw new Error(`Failed to create approval ${approval.id}`);
         return refreshed;
       },
-      async resolve(id, status, decisionMessage): Promise<ApprovalRequestRecord | null> {
+      async resolve(id, status, decisionMessage, modifiedPayload?: Record<string, unknown>): Promise<ApprovalRequestRecord | null> {
         const existing = await this.findById(id);
         if (!existing) return null;
         const decidedAt = new Date().toISOString();
         await db.query(
-          `update approval_requests set status = ?, decision_message = ?, decided_at = ? where id = ?`,
-          [status, decisionMessage ?? null, decidedAt, id],
+          `update approval_requests set status = ?, decision_message = ?, modified_payload = ?, decided_at = ? where id = ?`,
+          [status, decisionMessage ?? null, modifiedPayload ? JSON.stringify(modifiedPayload) : null, decidedAt, id],
         );
         return this.findById(id);
       },
@@ -1986,7 +1992,7 @@ export function createRepositories(db: Database): Repositories {
     artifacts: {
       async listByAgent(agentId: string): Promise<ArtifactRecord[]> {
         const result = await db.query<ArtifactRow>(
-          `select id, workspace_id, agent_id, run_id, kind, uri, size_bytes, created_at
+          `select id, workspace_id, agent_id, run_id, kind, uri, size_bytes, version, parent_artifact_id, created_at
            from artifacts where agent_id = ? order by created_at desc`,
           [agentId],
         );
@@ -1994,20 +2000,29 @@ export function createRepositories(db: Database): Repositories {
       },
       async listByRun(runId: string): Promise<ArtifactRecord[]> {
         const result = await db.query<ArtifactRow>(
-          `select id, workspace_id, agent_id, run_id, kind, uri, size_bytes, created_at
+          `select id, workspace_id, agent_id, run_id, kind, uri, size_bytes, version, parent_artifact_id, created_at
            from artifacts where run_id = ? order by created_at desc`,
           [runId],
         );
         return result.rows.map(mapArtifact);
       },
       async create(artifact): Promise<ArtifactRecord> {
+        // Version chaining: find latest artifact with same uri + agentId
+        const existing = await db.query<ArtifactRow>(
+          `select id, version from artifacts where uri = ? and agent_id = ? order by version desc limit 1`,
+          [artifact.uri, artifact.agentId],
+        );
+        const parentRow = existing.rows[0];
+        const version = parentRow ? (parentRow.version ?? 1) + 1 : 1;
+        const parentArtifactId = parentRow ? parentRow.id : null;
+
         await db.query(
-          `insert into artifacts (id, agent_id, workspace_id, run_id, kind, uri, size_bytes, created_at)
-           values (?, ?, ?, ?, ?, ?, ?, ?)`,
-          [artifact.id, artifact.agentId, artifact.workspaceId, artifact.runId ?? null, artifact.kind, artifact.uri, artifact.sizeBytes ?? null, artifact.createdAt],
+          `insert into artifacts (id, agent_id, workspace_id, run_id, kind, uri, size_bytes, version, parent_artifact_id, created_at)
+           values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [artifact.id, artifact.agentId, artifact.workspaceId, artifact.runId ?? null, artifact.kind, artifact.uri, artifact.sizeBytes ?? null, version, parentArtifactId, artifact.createdAt],
         );
         const result = await db.query<ArtifactRow>(
-          `select id, workspace_id, agent_id, run_id, kind, uri, size_bytes, created_at from artifacts where id = ?`,
+          `select id, workspace_id, agent_id, run_id, kind, uri, size_bytes, version, parent_artifact_id, created_at from artifacts where id = ?`,
           [artifact.id],
         );
         return mapArtifact(result.rows[0]);

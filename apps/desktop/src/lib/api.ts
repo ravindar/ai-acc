@@ -334,11 +334,13 @@ export async function fetchPendingApprovals(workspaceId?: string): Promise<Appro
 export async function approveApproval(input: {
   approvalId: string;
   decisionMessage?: string;
+  modifiedPayload?: Record<string, unknown>;
 }): Promise<ApprovalRequestRecord> {
   const response = await requestJson<{ approval: ApprovalRequestRecord }>(`/api/v1/approvals/${input.approvalId}/approve`, {
     method: "POST",
     body: JSON.stringify({
       decisionMessage: input.decisionMessage,
+      modifiedPayload: input.modifiedPayload,
     }),
   });
   return response.approval;
@@ -431,6 +433,20 @@ export async function updateAgent(agentId: string, input: { title?: string; cwd?
   await requestJson(`/api/v1/agents/${agentId}`, {
     method: "PATCH",
     body: JSON.stringify(input),
+  });
+}
+
+export async function updateAgentAutoStart(agentId: string, input: { autoStart: boolean; autoStartPrompt?: string }): Promise<void> {
+  await requestJson(`/api/v1/agents/${agentId}/auto-start`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateAgentCapability(agentId: string, capability: "reader" | "writer" | "commander" | "orchestrator"): Promise<void> {
+  await requestJson(`/api/v1/agents/${agentId}/capability`, {
+    method: "PATCH",
+    body: JSON.stringify({ capability }),
   });
 }
 

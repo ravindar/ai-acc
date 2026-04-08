@@ -1683,6 +1683,18 @@ code {
   max-height: 260px;
 }
 
+.mermaid-diagram {
+  margin: 8px 0;
+  overflow-x: auto;
+  background: transparent;
+}
+
+.mermaid-diagram svg {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
 .thread-message-detail {
   color: var(--muted);
   font-family: "IBM Plex Mono", monospace;
@@ -3839,6 +3851,21 @@ code {
   cursor: default;
 }
 
+/* Capability pills */
+.capability-pill {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+.capability-reader { background: #dbeafe; color: #1d4ed8; }
+.capability-writer { background: #dcfce7; color: #166534; }
+.capability-commander { background: #ffedd5; color: #9a3412; }
+.capability-orchestrator { background: #ede9fe; color: #6d28d9; }
+
 [data-theme="dark"] {
   color-scheme: dark;
   --bg: #0e0e0e;
@@ -3865,6 +3892,10 @@ code {
   --tone-artifacts: rgba(76,175,130,0.10);
   --tone-explorer: rgba(91,163,219,0.08);
   .agent-dep-badge { background: rgba(212,164,55,0.20); }
+  .capability-reader { background: #1e3a5f; color: #93c5fd; }
+  .capability-writer { background: #14532d; color: #86efac; }
+  .capability-commander { background: #431407; color: #fdba74; }
+  .capability-orchestrator { background: #2e1065; color: #c4b5fd; }
 }
 
 [data-theme="dark"] body {

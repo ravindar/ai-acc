@@ -26,6 +26,7 @@ export type TranscriptEntryType = "user" | "assistant" | "tool" | "system" | "er
 export type ToolCallStatus = "requested" | "pending_approval" | "approved" | "denied" | "running" | "completed" | "error";
 export type ApprovalStatus = "PENDING" | "APPROVED" | "DENIED";
 export type HandoffStatus = "OPEN" | "ASSIGNED" | "DONE" | "DISMISSED";
+export type AgentCapability = "reader" | "writer" | "commander" | "orchestrator";
 export type WorktreeStatus = "READY" | "ERROR" | "MISSING";
 
 export interface UsageRollup {
@@ -343,6 +344,7 @@ export interface ApprovalRequestRecord {
   requestedPayload: Record<string, unknown>;
   reason?: string;
   decisionMessage?: string;
+  modifiedPayload?: Record<string, unknown>;
   createdAt: string;
   decidedAt?: string;
 }
@@ -406,6 +408,8 @@ export interface ArtifactRecord {
   kind: "log" | "file" | "patch" | "trace";
   uri: string;
   sizeBytes?: number;
+  version: number;
+  parentArtifactId?: string;
   createdAt: string;
 }
 

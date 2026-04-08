@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import mermaid from "mermaid";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { agentStateMeta, usageFormatters } from "@acc/ui-kit";
@@ -69,6 +70,8 @@ import {
   updateWorkspace,
   denyApproval,
   dismissTeamAsk,
+  updateAgentAutoStart,
+  updateAgentCapability,
 } from "./lib/api";
 
 type FilterId = "all" | "active" | "idle" | "errors";
@@ -302,6 +305,55 @@ function renderInlineRichText(text: string): ReactNode[] {
   });
 }
 
+// Mermaid diagram type keywords that can appear at the start of an unlabelled code block
+const MERMAID_DETECT =
+  /^(flowchart|graph\s+[A-Z]{1,2}|sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie\s+title|pie\b|gitGraph|mindmap|timeline|xychart-beta|block-beta|architecture-beta|sankey-beta|quadrantChart|requirementDiagram|C4Context|C4Container|C4Component|kanban|zenuml|packet-beta)\b/;
+
+function looksLikeMermaid(code: string): boolean {
+  return MERMAID_DETECT.test(code.trimStart());
+}
+
+let mermaidReady = false;
+function ensureMermaid() {
+  if (!mermaidReady) {
+    // "loose" allows <br/> tags in node labels — safe for a local desktop app
+    mermaid.initialize({ startOnLoad: false, securityLevel: "loose", theme: "neutral" });
+    mermaidReady = true;
+  }
+}
+
+function MermaidDiagram({ code }: { code: string }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const trimmedCode = code.trim();
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    ensureMermaid();
+
+    // Reset: clear any previous render and data-processed flag
+    container.innerHTML = "";
+    container.removeAttribute("data-processed");
+    container.textContent = trimmedCode;
+
+    mermaid.run({ nodes: [container] }).catch((err: unknown) => {
+      console.error("[MermaidDiagram] mermaid.run failed:", err);
+      // Fallback: show raw code so content is never blank
+      if (containerRef.current) {
+        const pre = document.createElement("pre");
+        pre.className = "file-preview-code thread-code-block";
+        const codeEl = document.createElement("code");
+        codeEl.textContent = trimmedCode;
+        pre.appendChild(codeEl);
+        containerRef.current.textContent = "";
+        containerRef.current.appendChild(pre);
+      }
+    });
+  }, [trimmedCode]);
+
+  return <div ref={containerRef} className="mermaid-diagram" />;
+}
+
 function parseMarkdownTableRow(line: string): string[] {
   return line
     .trim()
@@ -334,7 +386,12 @@ function renderMarkdownBlocks(content: string): JSX.Element[] {
 
   return fencedSections.flatMap((section, sectionIndex) => {
     if (sectionIndex % 2 === 1) {
+      const langMatch = section.match(/^(\w+)\n/);
+      const lang = langMatch?.[1] ?? "";
       const codeBlock = section.replace(/^\w+\n/, "").trimEnd();
+      if (lang === "mermaid" || looksLikeMermaid(codeBlock)) {
+        return [<MermaidDiagram key={`mermaid-${sectionIndex}`} code={codeBlock} />];
+      }
       return [
         <pre key={`code-${sectionIndex}`} className="file-preview-code thread-code-block">
           <code>{codeBlock}</code>
@@ -1490,8 +1547,8 @@ export function App() {
   const [workspaceProjectRootDraft, setWorkspaceProjectRootDraft] = useState("");
   const [sharedContextDraft, setSharedContextDraft] = useState("");
   const [streamConnected, setStreamConnected] = useState(false);
-  // When WebSocket stream is live, these queries are invalidated on events — back off polling to 20s
-  const streamPollMs = streamConnected ? 20_000 : 3_000;
+  // When WebSocket stream is live, stop polling entirely — WebSocket invalidations drive all refreshes
+  const streamPollMs = streamConnected ? (false as const) : 3_000;
   const [openaiApiKey, setOpenaiApiKey] = useState("");
   const [anthropicApiKey, setAnthropicApiKey] = useState("");
   const [coordinationApiKey, setCoordinationApiKey] = useState("");
@@ -1514,8 +1571,11 @@ export function App() {
   >([]);
   const [agentTitleCreateDraft, setAgentTitleCreateDraft] = useState("");
   const [agentRoleDraft, setAgentRoleDraft] = useState("");
+  const [agentCapabilityDraft, setAgentCapabilityDraft] = useState<"reader" | "writer" | "commander" | "orchestrator">("writer");
   const [agentTaskDraft, setAgentTaskDraft] = useState("");
   const [agentCwdDraft, setAgentCwdDraft] = useState("");
+  const [editingApprovalId, setEditingApprovalId] = useState<string | null>(null);
+  const [editPayloadDraft, setEditPayloadDraft] = useState("");
   const [selectedContextPackIds, setSelectedContextPackIds] = useState<string[]>([]);
   const [agentFlowPending, setAgentFlowPending] = useState(false);
   const [plannerFleetPending, setPlannerFleetPending] = useState(false);
@@ -4074,7 +4134,7 @@ export function App() {
         provider: agentProviderDraft,
         model: agentModelDraft.trim(),
         title: agentTitleCreateDraft.trim() || undefined,
-        role: agentRoleDraft.trim(),
+        role: agentCapabilityDraft,
         task: taskWithPlannerGuidance,
         cwd: agentCwdDraft.trim() || undefined,
       });
@@ -4618,9 +4678,11 @@ export function App() {
     }
   }
 
-  async function handleApprove(approvalId: string): Promise<void> {
+  async function handleApprove(approvalId: string, modifiedPayload?: Record<string, unknown>): Promise<void> {
     try {
-      await approveApprovalMutation.mutateAsync({ approvalId });
+      await approveApprovalMutation.mutateAsync({ approvalId, modifiedPayload });
+      setEditingApprovalId(null);
+      setEditPayloadDraft("");
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["pending-approvals", activeWorkspaceId] }),
         queryClient.invalidateQueries({ queryKey: ["workspace-inbox", activeWorkspaceId] }),
@@ -6024,6 +6086,15 @@ export function App() {
                 </label>
               </div>
               <label className="settings-field">
+                <span>Capability</span>
+                <select value={agentCapabilityDraft} onChange={(e) => setAgentCapabilityDraft(e.target.value as "reader" | "writer" | "commander" | "orchestrator")}>
+                  <option value="writer">Writer (default)</option>
+                  <option value="reader">Reader</option>
+                  <option value="commander">Commander</option>
+                  <option value="orchestrator">Orchestrator</option>
+                </select>
+              </label>
+              <label className="settings-field">
                 <span>Working directory</span>
                 <input
                   type="text"
@@ -6262,31 +6333,50 @@ export function App() {
             <div className="panel-empty">No approvals or handoffs yet. They will appear here as agents ask for risky actions or create follow-ups.</div>
           ) : null}
 
-          {pendingApprovals.map((approval: ApprovalRequestRecord) => (
-            <article key={approval.id} className="thread-message thread-message-warning">
-              <div className="event-item-header">
-                <strong>{approval.requestedAction}</strong>
-                <span>{formatDateTime(approval.createdAt)}</span>
-              </div>
-              <p>{approval.reason || "No explicit reason was included by the agent."}</p>
-              <div className="compact-notices">
-                <span className="compact-note">run {approval.runId}</span>
-                <span className="compact-note">agent {approval.agentId}</span>
-              </div>
-              <pre className="file-preview-code">{JSON.stringify(approval.requestedPayload, null, 2)}</pre>
-              <div className="settings-actions">
-                <button className="outline-button" onClick={() => focusRun(approval.agentId, approval.runId)} type="button">
-                  Open run
-                </button>
-                <button className="outline-button success-button" onClick={() => void handleApprove(approval.id)} type="button">
-                  Approve
-                </button>
-                <button className="outline-button danger-button" onClick={() => void handleDeny(approval.id)} type="button">
-                  Deny
-                </button>
-              </div>
-            </article>
-          ))}
+          {pendingApprovals.map((approval: ApprovalRequestRecord) => {
+            const isFileAction = /write_file|create_file|edit_file/i.test(approval.requestedAction) || "patch" in approval.requestedPayload;
+            const payloadStr = JSON.stringify(approval.requestedPayload, null, 2);
+            const isEditing = editingApprovalId === approval.id;
+            let editJsonValid = true;
+            try { if (editPayloadDraft) JSON.parse(editPayloadDraft); } catch { editJsonValid = false; }
+            return (
+              <article key={approval.id} className="thread-message thread-message-warning">
+                <div className="event-item-header">
+                  <strong>{approval.requestedAction}</strong>
+                  <span>{formatDateTime(approval.createdAt)}</span>
+                </div>
+                <p>{approval.reason || "No explicit reason was included by the agent."}</p>
+                <div className="compact-notices">
+                  <span className="compact-note">run {approval.runId}</span>
+                  <span className="compact-note">agent {approval.agentId}</span>
+                </div>
+                {isFileAction
+                  ? renderPatchPreview(typeof approval.requestedPayload.patch === "string" ? approval.requestedPayload.patch : typeof approval.requestedPayload.content === "string" ? approval.requestedPayload.content : payloadStr)
+                  : <pre className="file-preview-code">{payloadStr}</pre>
+                }
+                {isEditing ? (
+                  <div style={{marginTop:"8px"}}>
+                    <textarea
+                      style={{width:"100%",minHeight:"120px",fontSize:"11px",fontFamily:"monospace",border:editJsonValid?"1px solid var(--border)":"1px solid var(--danger)",borderRadius:"4px",padding:"6px",resize:"vertical"}}
+                      value={editPayloadDraft}
+                      onChange={(e) => setEditPayloadDraft(e.target.value)}
+                    />
+                    <div className="settings-actions" style={{marginTop:"6px"}}>
+                      <button className="outline-button success-button" disabled={!editJsonValid} onClick={() => { try { void handleApprove(approval.id, JSON.parse(editPayloadDraft) as Record<string, unknown>); } catch { /* invalid JSON */ } }} type="button">Confirm</button>
+                      <button className="outline-button" onClick={() => { setEditingApprovalId(null); setEditPayloadDraft(""); }} type="button">Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="settings-actions">
+                    <button className="outline-button" onClick={() => focusRun(approval.agentId, approval.runId)} type="button">Open run</button>
+                    <button className="outline-button success-button" onClick={() => void handleApprove(approval.id)} type="button">Approve</button>
+                    <button className="outline-button" onClick={() => { setEditingApprovalId(approval.id); setEditPayloadDraft(payloadStr); }} type="button">Edit & Approve</button>
+                    <button className="outline-button danger-button" onClick={() => void handleDeny(approval.id)} type="button">Deny</button>
+                  </div>
+                )}
+              </article>
+            );
+          })}
 
           {workspaceInbox.map((handoff: HandoffItemRecord) => (
             <article key={handoff.id} className="thread-message thread-message-info">
@@ -7135,6 +7225,9 @@ export function App() {
           <div className="thread-artifact-head">
             <span className="panel-kicker">{artifactKindLabel(artifact.kind)}</span>
             <strong title={artifact.uri}>{artifactTitle}</strong>
+            {artifact.version > 1 && (
+              <span className="settings-pill" style={{fontSize:"9px",padding:"1px 4px"}}>v{artifact.version}</span>
+            )}
           </div>
           <span>{formatEventTimestamp(artifact.createdAt)}</span>
         </div>
@@ -7424,6 +7517,15 @@ export function App() {
               />
             </label>
           </div>
+            <label className="settings-field">
+              <span>Capability</span>
+              <select value={agentCapabilityDraft} onChange={(e) => setAgentCapabilityDraft(e.target.value as "reader" | "writer" | "commander" | "orchestrator")}>
+                <option value="writer">Writer (default)</option>
+                <option value="reader">Reader</option>
+                <option value="commander">Commander</option>
+                <option value="orchestrator">Orchestrator</option>
+              </select>
+            </label>
             <label className="settings-field">
               <span>Task</span>
               <textarea
@@ -8718,30 +8820,47 @@ export function App() {
             {workspaceFocusedAgent ? (
               selectedRunApprovals.length > 0 || selectedRunActivity.length > 0 ? (
                 <div className="thread-sidebar-stack">
-                  {selectedRunApprovals.map((approval) => (
-                    <article key={`workspace-approval-${approval.id}`} className="thread-message thread-message-warning">
-                      <div className="event-item-header">
-                        <strong>{approval.requestedAction}</strong>
-                        <span>{formatDateTime(approval.createdAt)}</span>
-                      </div>
-                      <p>{approval.reason || "The agent requested approval for a risky action."}</p>
-                      <div className="compact-notices">
-                        <span className="compact-note">{runToolCallById.get(approval.toolCallId)?.status ?? "pending"}</span>
-                        {runToolCallById.get(approval.toolCallId)?.requestedCwd ? (
-                          <span className="compact-note">{runToolCallById.get(approval.toolCallId)?.requestedCwd}</span>
-                        ) : null}
-                      </div>
-                      <pre className="file-preview-code">{formatJsonPreview(approval.requestedPayload)}</pre>
-                      <div className="settings-actions">
-                        <button className="outline-button success-button" onClick={() => void handleApprove(approval.id)} type="button">
-                          Approve
-                        </button>
-                        <button className="outline-button danger-button" onClick={() => void handleDeny(approval.id)} type="button">
-                          Deny
-                        </button>
-                      </div>
-                    </article>
-                  ))}
+                  {selectedRunApprovals.map((approval) => {
+                    const isFileAction = /write_file|create_file|edit_file/i.test(approval.requestedAction) || "patch" in approval.requestedPayload;
+                    const payloadStr = formatJsonPreview(approval.requestedPayload);
+                    const isEditing = editingApprovalId === approval.id;
+                    let editJsonValid2 = true;
+                    try { if (editPayloadDraft) JSON.parse(editPayloadDraft); } catch { editJsonValid2 = false; }
+                    return (
+                      <article key={`workspace-approval-${approval.id}`} className="thread-message thread-message-warning">
+                        <div className="event-item-header">
+                          <strong>{approval.requestedAction}</strong>
+                          <span>{formatDateTime(approval.createdAt)}</span>
+                        </div>
+                        <p>{approval.reason || "The agent requested approval for a risky action."}</p>
+                        <div className="compact-notices">
+                          <span className="compact-note">{runToolCallById.get(approval.toolCallId)?.status ?? "pending"}</span>
+                          {runToolCallById.get(approval.toolCallId)?.requestedCwd ? (
+                            <span className="compact-note">{runToolCallById.get(approval.toolCallId)?.requestedCwd}</span>
+                          ) : null}
+                        </div>
+                        {isFileAction
+                          ? renderPatchPreview(typeof approval.requestedPayload.patch === "string" ? approval.requestedPayload.patch : typeof approval.requestedPayload.content === "string" ? approval.requestedPayload.content : payloadStr)
+                          : <pre className="file-preview-code">{payloadStr}</pre>
+                        }
+                        {isEditing ? (
+                          <div style={{marginTop:"8px"}}>
+                            <textarea style={{width:"100%",minHeight:"120px",fontSize:"11px",fontFamily:"monospace",border:editJsonValid2?"1px solid var(--border)":"1px solid var(--danger)",borderRadius:"4px",padding:"6px",resize:"vertical"}} value={editPayloadDraft} onChange={(e) => setEditPayloadDraft(e.target.value)} />
+                            <div className="settings-actions" style={{marginTop:"6px"}}>
+                              <button className="outline-button success-button" disabled={!editJsonValid2} onClick={() => { try { void handleApprove(approval.id, JSON.parse(editPayloadDraft) as Record<string, unknown>); } catch { /* invalid */ } }} type="button">Confirm</button>
+                              <button className="outline-button" onClick={() => { setEditingApprovalId(null); setEditPayloadDraft(""); }} type="button">Cancel</button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="settings-actions">
+                            <button className="outline-button success-button" onClick={() => void handleApprove(approval.id)} type="button">Approve</button>
+                            <button className="outline-button" onClick={() => { setEditingApprovalId(approval.id); setEditPayloadDraft(JSON.stringify(approval.requestedPayload, null, 2)); }} type="button">Edit & Approve</button>
+                            <button className="outline-button danger-button" onClick={() => void handleDeny(approval.id)} type="button">Deny</button>
+                          </div>
+                        )}
+                      </article>
+                    );
+                  })}
                   {selectedRunActivity.map((entry) => (
                     <article key={`workspace-audit-${entry.id}`} className="thread-message thread-message-info">
                       <div className="event-item-header">
@@ -8940,6 +9059,12 @@ export function App() {
                           </span>
                           {agent.state === "WAITING_DEPENDENCY" && (
                             <span className="agent-dep-badge">blocked</span>
+                          )}
+                          {typeof agent.metadata.role === "string" && ["reader","writer","commander","orchestrator"].includes(agent.metadata.role) && (
+                            <span className={`capability-pill capability-${agent.metadata.role}`}>{agent.metadata.role}</span>
+                          )}
+                          {agent.metadata.autoStart === true && (
+                            <span className="settings-pill settings-pill-active" style={{fontSize:"9px",padding:"1px 4px"}}>auto</span>
                           )}
                         </div>
                         <div className="compact-notices">
@@ -9548,30 +9673,47 @@ export function App() {
         </section>
 
         <div className="thread-stream">
-          {selectedRunApprovals.map((approval) => (
-            <article key={approval.id} className="thread-message thread-message-warning">
-              <div className="event-item-header">
-                <strong>{approval.requestedAction}</strong>
-                <span>{formatDateTime(approval.createdAt)}</span>
-              </div>
-              <p>{approval.reason || "The agent requested approval for a risky action."}</p>
-              <div className="compact-notices">
-                <span className="compact-note">{runToolCallById.get(approval.toolCallId)?.status ?? "pending"}</span>
-                {runToolCallById.get(approval.toolCallId)?.requestedCwd ? (
-                  <span className="compact-note">{runToolCallById.get(approval.toolCallId)?.requestedCwd}</span>
-                ) : null}
-              </div>
-              <pre className="file-preview-code">{formatJsonPreview(approval.requestedPayload)}</pre>
-              <div className="settings-actions">
-                <button className="outline-button success-button" onClick={() => void handleApprove(approval.id)} type="button">
-                  Approve
-                </button>
-                <button className="outline-button danger-button" onClick={() => void handleDeny(approval.id)} type="button">
-                  Deny
-                </button>
-              </div>
-            </article>
-          ))}
+          {selectedRunApprovals.map((approval) => {
+            const isFileAction3 = /write_file|create_file|edit_file/i.test(approval.requestedAction) || "patch" in approval.requestedPayload;
+            const payloadStr3 = formatJsonPreview(approval.requestedPayload);
+            const isEditing3 = editingApprovalId === approval.id;
+            let editJsonValid3 = true;
+            try { if (editPayloadDraft) JSON.parse(editPayloadDraft); } catch { editJsonValid3 = false; }
+            return (
+              <article key={approval.id} className="thread-message thread-message-warning">
+                <div className="event-item-header">
+                  <strong>{approval.requestedAction}</strong>
+                  <span>{formatDateTime(approval.createdAt)}</span>
+                </div>
+                <p>{approval.reason || "The agent requested approval for a risky action."}</p>
+                <div className="compact-notices">
+                  <span className="compact-note">{runToolCallById.get(approval.toolCallId)?.status ?? "pending"}</span>
+                  {runToolCallById.get(approval.toolCallId)?.requestedCwd ? (
+                    <span className="compact-note">{runToolCallById.get(approval.toolCallId)?.requestedCwd}</span>
+                  ) : null}
+                </div>
+                {isFileAction3
+                  ? renderPatchPreview(typeof approval.requestedPayload.patch === "string" ? approval.requestedPayload.patch : typeof approval.requestedPayload.content === "string" ? approval.requestedPayload.content : payloadStr3)
+                  : <pre className="file-preview-code">{payloadStr3}</pre>
+                }
+                {isEditing3 ? (
+                  <div style={{marginTop:"8px"}}>
+                    <textarea style={{width:"100%",minHeight:"120px",fontSize:"11px",fontFamily:"monospace",border:editJsonValid3?"1px solid var(--border)":"1px solid var(--danger)",borderRadius:"4px",padding:"6px",resize:"vertical"}} value={editPayloadDraft} onChange={(e) => setEditPayloadDraft(e.target.value)} />
+                    <div className="settings-actions" style={{marginTop:"6px"}}>
+                      <button className="outline-button success-button" disabled={!editJsonValid3} onClick={() => { try { void handleApprove(approval.id, JSON.parse(editPayloadDraft) as Record<string, unknown>); } catch { /* invalid */ } }} type="button">Confirm</button>
+                      <button className="outline-button" onClick={() => { setEditingApprovalId(null); setEditPayloadDraft(""); }} type="button">Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="settings-actions">
+                    <button className="outline-button success-button" onClick={() => void handleApprove(approval.id)} type="button">Approve</button>
+                    <button className="outline-button" onClick={() => { setEditingApprovalId(approval.id); setEditPayloadDraft(JSON.stringify(approval.requestedPayload, null, 2)); }} type="button">Edit & Approve</button>
+                    <button className="outline-button danger-button" onClick={() => void handleDeny(approval.id)} type="button">Deny</button>
+                  </div>
+                )}
+              </article>
+            );
+          })}
 
           {selectedRun ? (
             selectedRunThreadTimeline.length > 0 ? (
@@ -9769,32 +9911,47 @@ export function App() {
             <div className="agent-output-hero run-section run-section-risk">
               <span className="panel-kicker">Pending approvals</span>
               <div className="run-card-grid">
-                {selectedRunApprovals.map((approval) => (
-                  <article key={approval.id} className="run-card run-card-approval">
-                    <div className="event-item-header">
-                      <strong>{approval.requestedAction}</strong>
-                      <span>{formatDateTime(approval.createdAt)}</span>
-                    </div>
-                    <p>{approval.reason || "The model did not include a separate rationale for this request."}</p>
-                    <div className="compact-notices">
-                      <span className="compact-note">
-                        status {runToolCallById.get(approval.toolCallId)?.status ?? "pending"}
-                      </span>
-                      {runToolCallById.get(approval.toolCallId)?.requestedCwd ? (
-                        <span className="compact-note">{runToolCallById.get(approval.toolCallId)?.requestedCwd}</span>
-                      ) : null}
-                    </div>
-                    <pre className="file-preview-code">{formatJsonPreview(approval.requestedPayload)}</pre>
-                    <div className="settings-actions">
-                      <button className="outline-button success-button" onClick={() => void handleApprove(approval.id)} type="button">
-                        Approve
-                      </button>
-                      <button className="outline-button danger-button" onClick={() => void handleDeny(approval.id)} type="button">
-                        Deny
-                      </button>
-                    </div>
-                  </article>
-                ))}
+                {selectedRunApprovals.map((approval) => {
+                  const isFileAction4 = /write_file|create_file|edit_file/i.test(approval.requestedAction) || "patch" in approval.requestedPayload;
+                  const payloadStr4 = formatJsonPreview(approval.requestedPayload);
+                  const isEditing4 = editingApprovalId === approval.id;
+                  let editJsonValid4 = true;
+                  try { if (editPayloadDraft) JSON.parse(editPayloadDraft); } catch { editJsonValid4 = false; }
+                  return (
+                    <article key={approval.id} className="run-card run-card-approval">
+                      <div className="event-item-header">
+                        <strong>{approval.requestedAction}</strong>
+                        <span>{formatDateTime(approval.createdAt)}</span>
+                      </div>
+                      <p>{approval.reason || "The model did not include a separate rationale for this request."}</p>
+                      <div className="compact-notices">
+                        <span className="compact-note">status {runToolCallById.get(approval.toolCallId)?.status ?? "pending"}</span>
+                        {runToolCallById.get(approval.toolCallId)?.requestedCwd ? (
+                          <span className="compact-note">{runToolCallById.get(approval.toolCallId)?.requestedCwd}</span>
+                        ) : null}
+                      </div>
+                      {isFileAction4
+                        ? renderPatchPreview(typeof approval.requestedPayload.patch === "string" ? approval.requestedPayload.patch : typeof approval.requestedPayload.content === "string" ? approval.requestedPayload.content : payloadStr4)
+                        : <pre className="file-preview-code">{payloadStr4}</pre>
+                      }
+                      {isEditing4 ? (
+                        <div style={{marginTop:"8px"}}>
+                          <textarea style={{width:"100%",minHeight:"100px",fontSize:"11px",fontFamily:"monospace",border:editJsonValid4?"1px solid var(--border)":"1px solid var(--danger)",borderRadius:"4px",padding:"6px",resize:"vertical"}} value={editPayloadDraft} onChange={(e) => setEditPayloadDraft(e.target.value)} />
+                          <div className="settings-actions" style={{marginTop:"6px"}}>
+                            <button className="outline-button success-button" disabled={!editJsonValid4} onClick={() => { try { void handleApprove(approval.id, JSON.parse(editPayloadDraft) as Record<string, unknown>); } catch { /* invalid */ } }} type="button">Confirm</button>
+                            <button className="outline-button" onClick={() => { setEditingApprovalId(null); setEditPayloadDraft(""); }} type="button">Cancel</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="settings-actions">
+                          <button className="outline-button success-button" onClick={() => void handleApprove(approval.id)} type="button">Approve</button>
+                          <button className="outline-button" onClick={() => { setEditingApprovalId(approval.id); setEditPayloadDraft(JSON.stringify(approval.requestedPayload, null, 2)); }} type="button">Edit & Approve</button>
+                          <button className="outline-button danger-button" onClick={() => void handleDeny(approval.id)} type="button">Deny</button>
+                        </div>
+                      )}
+                    </article>
+                  );
+                })}
               </div>
             </div>
           ) : null}
@@ -10257,7 +10414,59 @@ export function App() {
           </div>
           <div>
             <dt>Role</dt>
-            <dd>{typeof selectedAgent.metadata.role === "string" ? selectedAgent.metadata.role : "Unspecified"}</dd>
+            <dd>
+              {typeof selectedAgent.metadata.role === "string" ? selectedAgent.metadata.role : "Unspecified"}
+              {typeof selectedAgent.metadata.role === "string" && ["reader","writer","commander","orchestrator"].includes(selectedAgent.metadata.role) && (
+                <span style={{marginLeft:"6px"}} className={`capability-pill capability-${selectedAgent.metadata.role}`}>{selectedAgent.metadata.role}</span>
+              )}
+            </dd>
+          </div>
+          <div>
+            <dt>Capability</dt>
+            <dd>
+              <select
+                value={typeof selectedAgent.metadata.role === "string" && ["reader","writer","commander","orchestrator"].includes(selectedAgent.metadata.role) ? selectedAgent.metadata.role : "writer"}
+                onChange={async (e) => {
+                  await updateAgentCapability(selectedAgent.id, e.target.value as "reader" | "writer" | "commander" | "orchestrator");
+                  await queryClient.invalidateQueries({ queryKey: ["workspace-overview", activeWorkspaceId] });
+                }}
+                style={{fontSize:"12px"}}
+              >
+                <option value="writer">Writer</option>
+                <option value="reader">Reader</option>
+                <option value="commander">Commander</option>
+                <option value="orchestrator">Orchestrator</option>
+              </select>
+            </dd>
+          </div>
+          <div>
+            <dt>Auto-start</dt>
+            <dd>
+              <label style={{display:"flex",alignItems:"center",gap:"6px",fontSize:"12px"}}>
+                <input
+                  type="checkbox"
+                  checked={selectedAgent.metadata.autoStart === true}
+                  onChange={async (e) => {
+                    await updateAgentAutoStart(selectedAgent.id, { autoStart: e.target.checked });
+                    await queryClient.invalidateQueries({ queryKey: ["workspace-overview", activeWorkspaceId] });
+                  }}
+                />
+                Auto-start on workspace load
+              </label>
+              {selectedAgent.metadata.autoStart === true && (
+                <textarea
+                  style={{marginTop:"6px",width:"100%",fontSize:"11px",resize:"vertical"}}
+                  placeholder="Auto-start prompt (default: Continue where you left off.)"
+                  defaultValue={typeof selectedAgent.metadata.autoStartPrompt === "string" ? selectedAgent.metadata.autoStartPrompt : ""}
+                  onBlur={async (e) => {
+                    await updateAgentAutoStart(selectedAgent.id, {
+                      autoStart: true,
+                      autoStartPrompt: e.target.value.trim() || undefined,
+                    });
+                  }}
+                />
+              )}
+            </dd>
           </div>
           <div>
             <dt>Working directory</dt>

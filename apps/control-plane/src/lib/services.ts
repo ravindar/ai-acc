@@ -68,6 +68,28 @@ export async function createServices(config: AppConfig): Promise<AppServices> {
     await runtimeManager.recoverDetachedSessions();
     await runOrchestrator.recoverInterruptedRuns();
 
+    // Auto-start agents that have autoStart metadata flag
+    void (async () => {
+      try {
+        const allAgents = await repositories.agents.list();
+        for (const agent of allAgents) {
+          if (agent.metadata.autoStart !== true) continue;
+          const activeRun = await repositories.runs.findActiveByAgent(agent.id);
+          if (activeRun) continue;
+          const prompt = typeof agent.metadata.autoStartPrompt === "string" && agent.metadata.autoStartPrompt.trim()
+            ? agent.metadata.autoStartPrompt
+            : "Continue where you left off.";
+          try {
+            await runOrchestrator.startRun(agent.id, prompt);
+          } catch (err) {
+            console.warn(`[auto-start] Failed to start agent ${agent.id}: ${String(err)}`);
+          }
+        }
+      } catch (err) {
+        console.warn(`[auto-start] autoStartPendingAgents failed: ${String(err)}`);
+      }
+    })();
+
     coordinationService.setAutoSpawnCallback(async (handoffId, prompt) => {
       const handoff = await repositories.handoffs.findById(handoffId);
       if (!handoff) return;
