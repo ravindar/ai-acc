@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, extname, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import type {
@@ -149,15 +149,40 @@ function isTextFile(filePath: string): boolean {
 }
 
 function ensureWithinRoot(root: string, requestedPath: string | undefined): string {
-  const normalizedRoot = resolve(root);
-  const target = resolve(normalizedRoot, requestedPath ?? ".");
-  const rel = relative(normalizedRoot, target);
+  // Resolve symlinks on the root itself — it must exist.
+  const normalizedRoot = realpathSync(root);
+  const raw = resolve(normalizedRoot, requestedPath ?? ".");
 
-  if (rel.startsWith("..") || rel === ".." || rel.includes(`..${process.platform === "win32" ? "\\" : "/"}`)) {
+  // Resolve symlinks on the target. For paths that don't yet exist (e.g. a new
+  // file being written) we walk up to the nearest existing ancestor, resolve
+  // symlinks there, then re-append the remaining segments.  This prevents an
+  // agent from escaping the sandbox via a symlink inside the worktree.
+  let resolved = raw;
+  try {
+    resolved = realpathSync(raw);
+  } catch {
+    let candidate = raw;
+    const suffix: string[] = [];
+    for (;;) {
+      const parent = dirname(candidate);
+      if (parent === candidate) break; // reached filesystem root
+      suffix.unshift(basename(candidate));
+      candidate = parent;
+      try {
+        resolved = resolve(realpathSync(candidate), ...suffix);
+        break;
+      } catch {
+        // keep walking up
+      }
+    }
+  }
+
+  const rel = relative(normalizedRoot, resolved);
+  if (rel.startsWith("..") || isAbsolute(rel)) {
     throw new Error(`Requested path escapes the worktree root: ${requestedPath ?? "."}`);
   }
 
-  return target;
+  return resolved;
 }
 
 async function listTree(root: string, requestedPath: string | undefined, depth: number, results: string[], currentDepth: number): Promise<void> {

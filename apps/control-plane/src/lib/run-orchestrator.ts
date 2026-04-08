@@ -123,7 +123,10 @@ export function createRunOrchestrator(
             workspaceId,
             stopped: false,
           });
-          void continueRun(pendingRun.id, agentId, { input: pendingRun.prompt }, 0);
+          continueRun(pendingRun.id, agentId, { input: pendingRun.prompt }, 0).catch((err) => {
+            logger.error(`continueRun failed for queued run ${pendingRun.id}: ${String(err)}`);
+            void setRunState(pendingRun.id, "ERROR", `Unexpected error resuming queued run: ${String(err)}`);
+          });
         }
       }
     } catch (error) {
@@ -712,7 +715,10 @@ export function createRunOrchestrator(
     }
 
     await setRunState(run.id, "RUNNING");
-    void continueRun(run.id, run.agentId, { toolResults: allToolResults }, pending.nextIteration);
+    continueRun(run.id, run.agentId, { toolResults: allToolResults }, pending.nextIteration).catch((err) => {
+      logger.error(`continueRun failed after approval for run ${run.id}: ${String(err)}`);
+      void setRunState(run.id, "ERROR", `Unexpected error resuming run after approval: ${String(err)}`);
+    });
   }
 
   return {
@@ -777,7 +783,10 @@ export function createRunOrchestrator(
         return run;
       }
 
-      void continueRun(run.id, agentId, { input: prompt }, 0);
+      continueRun(run.id, agentId, { input: prompt }, 0).catch((err) => {
+        logger.error(`continueRun failed at startRun for run ${run.id}: ${String(err)}`);
+        void setRunState(run.id, "ERROR", `Unexpected error starting run: ${String(err)}`);
+      });
       return run;
     },
 
@@ -893,6 +902,7 @@ export function createRunOrchestrator(
     async recoverInterruptedRuns() {
       const agents = await repositories.agents.list();
       let recovered = 0;
+      const erroredRunIds = new Set<string>();
 
       for (const agent of agents) {
         const active = await repositories.runs.findActiveByAgent(agent.id);
@@ -902,6 +912,7 @@ export function createRunOrchestrator(
         }
 
         recovered += 1;
+        erroredRunIds.add(active.id);
 
         // Count how many tool steps completed so the user knows where the run was interrupted.
         const transcriptEntries = await repositories.transcript.listByRun(active.id);
@@ -929,7 +940,15 @@ export function createRunOrchestrator(
       let staleDenied = 0;
       for (const approval of pending) {
         const ageMs = Date.now() - new Date(approval.createdAt).getTime();
-        if (ageMs >= ONE_HOUR_MS) {
+        // Immediately deny approvals for runs that just errored on restart (avoids orphaned PENDING rows)
+        if (erroredRunIds.has(approval.runId)) {
+          await repositories.approvals.resolve(
+            approval.id,
+            "DENIED",
+            "The run was interrupted by a control-plane restart and cannot be resumed.",
+          );
+          staleDenied += 1;
+        } else if (ageMs >= ONE_HOUR_MS) {
           await repositories.approvals.resolve(
             approval.id,
             "DENIED",
@@ -937,7 +956,7 @@ export function createRunOrchestrator(
           );
           staleDenied += 1;
         }
-        // Recent approvals (<1 h) are left PENDING so the operator can review them in the UI.
+        // Recent approvals (<1 h) for non-errored runs are left PENDING so the operator can review them.
       }
 
       if (recovered > 0) {
