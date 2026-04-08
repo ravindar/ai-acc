@@ -14,6 +14,8 @@ import type {
   WorktreeRecord,
 } from "@acc/shared-types";
 
+import { getModelCapabilities } from "@acc/pricing";
+
 import type { AppConfig } from "../config.js";
 import type { CoordinationService } from "./coordination-state.js";
 import { createId } from "./ids.js";
@@ -42,8 +44,32 @@ const AUTO_APPROVED_TOOLS = new Set([
   "send_agent_message",
   "mark_message_read",
   "update_shared_context",
+  "list_providers",
+  "suggest_model",
 ]);
 const APPROVAL_REQUIRED_TOOLS = new Set(["write_file", "apply_patch", "run_command", "spawn_agent"]);
+
+type ProviderEntry = {
+  id: string;
+  label: string;
+  defaultModel: string;
+  models: string[];
+};
+
+const PROVIDER_CATALOG: ProviderEntry[] = [
+  {
+    id: "claude",
+    label: "Anthropic Claude",
+    defaultModel: "claude-sonnet-4-6",
+    models: ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"],
+  },
+  {
+    id: "codex",
+    label: "OpenAI Codex / GPT",
+    defaultModel: "codex-mini-latest",
+    models: ["codex-mini-latest", "o4-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini"],
+  },
+];
 
 type LoggerLike = Pick<Console, "error" | "info" | "warn">;
 
@@ -496,6 +522,30 @@ export function createToolBroker(
               value: { type: "string", description: "Context value." },
             },
             required: ["key", "value"],
+          },
+        },
+        {
+          name: "list_providers",
+          approval: "auto",
+          description: "List available AI providers and their models with capabilities (context window, vision support, tool support). Use this to pick the best provider/model when spawning sub-agents.",
+          argumentsSummary: "{}",
+          inputSchema: { type: "object", additionalProperties: false, properties: {}, required: [] },
+        },
+        {
+          name: "suggest_model",
+          approval: "auto",
+          description: "Get model recommendations for a task based on its requirements. Returns the top provider+model choices with reasoning.",
+          argumentsSummary: "{ taskDescription, requiresVision?, preferLowCost?, preferLargeContext? }",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              taskDescription: { type: "string", description: "Brief description of what the agent will do." },
+              requiresVision: { type: "boolean", description: "Set true if the task involves analyzing images or screenshots." },
+              preferLowCost: { type: "boolean", description: "Prefer smaller/cheaper models." },
+              preferLargeContext: { type: "boolean", description: "Prefer models with the largest context window." },
+            },
+            required: ["taskDescription"],
           },
         },
       ];
@@ -1096,12 +1146,93 @@ export function createToolBroker(
             output: { key, value, totalKeys, updatedAt: updated?.updatedAt ?? new Date().toISOString() },
           };
         }
+        case "list_providers": {
+          const providers = PROVIDER_CATALOG.map((p) => ({
+            id: p.id,
+            label: p.label,
+            defaultModel: p.defaultModel,
+            models: p.models.map((m) => {
+              const caps = getModelCapabilities(m);
+              return {
+                id: m,
+                contextWindow: caps?.contextWindow ?? null,
+                maxOutputTokens: caps?.maxOutputTokens ?? null,
+                supportsVision: caps?.supportsVision ?? false,
+                supportsTools: caps?.supportsTools ?? true,
+                supportsCache: caps?.supportsCache ?? false,
+              };
+            }),
+          }));
+          return {
+            status: "completed",
+            output: {
+              providers,
+              tip: "Use suggest_model to get recommendations for a specific task, or pass provider+model to spawn_agent.",
+            },
+          };
+        }
+        case "suggest_model": {
+          const desc = (typeof input.taskDescription === "string" ? input.taskDescription : "").toLowerCase();
+          const requiresVision = input.requiresVision === true;
+          const preferLowCost = input.preferLowCost === true;
+          const preferLargeContext = input.preferLargeContext === true;
+
+          type Suggestion = { provider: string; model: string; reason: string; contextWindow: number | null; supportsVision: boolean };
+          const suggestions: Suggestion[] = [];
+
+          // Vision tasks: only Claude supports vision
+          if (requiresVision) {
+            const visionModel = preferLowCost ? "claude-haiku-4-5-20251001" : "claude-opus-4-6";
+            const caps = getModelCapabilities(visionModel);
+            suggestions.push({ provider: "claude", model: visionModel, reason: "Vision required — only Claude supports image analysis.", contextWindow: caps?.contextWindow ?? null, supportsVision: true });
+          } else if (preferLargeContext) {
+            const caps = getModelCapabilities("claude-opus-4-6");
+            suggestions.push({ provider: "claude", model: "claude-opus-4-6", reason: "Largest context window (200k tokens) for long-document tasks.", contextWindow: caps?.contextWindow ?? null, supportsVision: true });
+            const caps2 = getModelCapabilities("claude-sonnet-4-6");
+            suggestions.push({ provider: "claude", model: "claude-sonnet-4-6", reason: "200k context, fast and cost-effective for most tasks.", contextWindow: caps2?.contextWindow ?? null, supportsVision: true });
+          } else if (preferLowCost) {
+            // Prefer cheap small models
+            const isCode = /\b(code|implement|refactor|test|debug|fix bug|typescript|python|javascript)\b/.test(desc);
+            if (isCode) {
+              const caps = getModelCapabilities("codex-mini-latest");
+              suggestions.push({ provider: "codex", model: "codex-mini-latest", reason: "Low-cost model optimised for code tasks.", contextWindow: caps?.contextWindow ?? null, supportsVision: false });
+            }
+            const caps2 = getModelCapabilities("claude-haiku-4-5-20251001");
+            suggestions.push({ provider: "claude", model: "claude-haiku-4-5-20251001", reason: "Fastest, lowest-cost Claude model.", contextWindow: caps2?.contextWindow ?? null, supportsVision: false });
+          } else {
+            // Default heuristics
+            const isCode = /\b(code|implement|refactor|test|debug|fix|typescript|python|javascript|rust|go)\b/.test(desc);
+            const isAnalysis = /\b(analyze|summarize|explain|research|plan|design|architect)\b/.test(desc);
+            if (isCode && !isAnalysis) {
+              const caps = getModelCapabilities("codex-mini-latest");
+              suggestions.push({ provider: "codex", model: "codex-mini-latest", reason: "Optimised for code generation and editing.", contextWindow: caps?.contextWindow ?? null, supportsVision: false });
+            }
+            const caps2 = getModelCapabilities("claude-sonnet-4-6");
+            suggestions.push({ provider: "claude", model: "claude-sonnet-4-6", reason: "Balanced performance — good for most tasks.", contextWindow: caps2?.contextWindow ?? null, supportsVision: true });
+            const caps3 = getModelCapabilities("claude-opus-4-6");
+            suggestions.push({ provider: "claude", model: "claude-opus-4-6", reason: "Most capable — best for complex reasoning and long context.", contextWindow: caps3?.contextWindow ?? null, supportsVision: true });
+          }
+
+          return {
+            status: "completed",
+            output: {
+              taskDescription: input.taskDescription,
+              suggestions: suggestions.slice(0, 3),
+              tip: "Pass the chosen provider and model to spawn_agent.",
+            },
+          };
+        }
         case "spawn_agent": {
           const title = (typeof input.title === "string" ? input.title : "").trim();
           const prompt = (typeof input.prompt === "string" ? input.prompt : "").trim();
-          const provider = input.provider === "claude" ? "claude" : "codex";
-          const model = (typeof input.model === "string" ? input.model : "").trim();
-          if (!title || !prompt || !model) throw new Error("spawn_agent requires title, prompt, and model.");
+          // Auto-select provider: default to claude if not specified
+          const rawProvider = typeof input.provider === "string" ? input.provider.trim() : "";
+          const provider: string = rawProvider || "claude";
+          // Auto-select model: use catalog default for the provider if not specified
+          const rawModel = typeof input.model === "string" ? input.model.trim() : "";
+          const catalogEntry = PROVIDER_CATALOG.find((p) => p.id === provider);
+          const model = rawModel || catalogEntry?.defaultModel || "claude-sonnet-4-6";
+          if (!title || !prompt) throw new Error("spawn_agent requires title and prompt.");
 
           // Enforce spawn depth limit.
           const parentDepth = typeof context.agent.metadata.spawnDepth === "number" ? context.agent.metadata.spawnDepth : 0;
