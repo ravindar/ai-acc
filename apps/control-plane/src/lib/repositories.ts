@@ -210,6 +210,8 @@ type MemoryBlockRow = QueryResultRow & {
   key: string;
   value: string;
   scope: MemoryScope;
+  expires_at: string | null;
+  version: number;
   created_at: string;
   updated_at: string;
 };
@@ -846,6 +848,8 @@ function mapMemoryBlock(row: MemoryBlockRow): AgentMemoryBlockRecord {
     key: row.key,
     value: row.value,
     scope: row.scope,
+    expiresAt: row.expires_at ?? null,
+    version: row.version ?? 1,
     createdAt: toIsoString(row.created_at),
     updatedAt: toIsoString(row.updated_at),
   };
@@ -1224,9 +1228,14 @@ export interface Repositories {
   };
   memory: {
     upsert(block: AgentMemoryBlockRecord): Promise<AgentMemoryBlockRecord>;
+    /** List non-expired memory blocks for this agent. */
     listForAgent(agentId: string): Promise<AgentMemoryBlockRecord[]>;
+    /** List non-expired workspace-scoped memory blocks. */
     listWorkspaceScoped(workspaceId: string): Promise<AgentMemoryBlockRecord[]>;
     findByAgentAndKey(agentId: string, key: string): Promise<AgentMemoryBlockRecord | null>;
+    deleteByAgentAndKey(agentId: string, key: string): Promise<boolean>;
+    /** Purge all expired memory blocks across all workspaces. Returns count deleted. */
+    purgeExpired(): Promise<number>;
   };
   messages: {
     send(message: AgentMessageRecord): Promise<AgentMessageRecord>;
@@ -1987,41 +1996,68 @@ export function createRepositories(db: Database): Repositories {
       async upsert(block: AgentMemoryBlockRecord): Promise<AgentMemoryBlockRecord> {
         const now = new Date().toISOString();
         await db.query(
-          `INSERT INTO agent_memory_blocks (id, workspace_id, agent_id, key, value, scope, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `INSERT INTO agent_memory_blocks (id, workspace_id, agent_id, key, value, scope, expires_at, version, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
            ON CONFLICT(agent_id, key) DO UPDATE SET
              value = excluded.value,
              scope = excluded.scope,
+             expires_at = excluded.expires_at,
+             version = agent_memory_blocks.version + 1,
              updated_at = excluded.updated_at`,
-          [block.id, block.workspaceId, block.agentId, block.key, block.value, block.scope, block.createdAt, now],
+          [block.id, block.workspaceId, block.agentId, block.key, block.value, block.scope, block.expiresAt ?? null, block.createdAt, now],
         );
         const result = await db.query<MemoryBlockRow>(
-          `SELECT id, workspace_id, agent_id, key, value, scope, created_at, updated_at FROM agent_memory_blocks WHERE agent_id = ? AND key = ?`,
+          `SELECT id, workspace_id, agent_id, key, value, scope, expires_at, version, created_at, updated_at FROM agent_memory_blocks WHERE agent_id = ? AND key = ?`,
           [block.agentId, block.key],
         );
         if (!result.rows[0]) throw new Error(`Failed to upsert memory block ${block.agentId}:${block.key}`);
         return mapMemoryBlock(result.rows[0]);
       },
       async listForAgent(agentId: string): Promise<AgentMemoryBlockRecord[]> {
+        const now = new Date().toISOString();
         const result = await db.query<MemoryBlockRow>(
-          `SELECT id, workspace_id, agent_id, key, value, scope, created_at, updated_at FROM agent_memory_blocks WHERE agent_id = ? ORDER BY key ASC`,
-          [agentId],
+          `SELECT id, workspace_id, agent_id, key, value, scope, expires_at, version, created_at, updated_at
+           FROM agent_memory_blocks
+           WHERE agent_id = ? AND (expires_at IS NULL OR expires_at > ?)
+           ORDER BY key ASC`,
+          [agentId, now],
         );
         return result.rows.map(mapMemoryBlock);
       },
       async listWorkspaceScoped(workspaceId: string): Promise<AgentMemoryBlockRecord[]> {
+        const now = new Date().toISOString();
         const result = await db.query<MemoryBlockRow>(
-          `SELECT id, workspace_id, agent_id, key, value, scope, created_at, updated_at FROM agent_memory_blocks WHERE workspace_id = ? AND scope = 'workspace' ORDER BY agent_id, key ASC`,
-          [workspaceId],
+          `SELECT id, workspace_id, agent_id, key, value, scope, expires_at, version, created_at, updated_at
+           FROM agent_memory_blocks
+           WHERE workspace_id = ? AND scope = 'workspace' AND (expires_at IS NULL OR expires_at > ?)
+           ORDER BY agent_id, key ASC`,
+          [workspaceId, now],
         );
         return result.rows.map(mapMemoryBlock);
       },
       async findByAgentAndKey(agentId: string, key: string): Promise<AgentMemoryBlockRecord | null> {
         const result = await db.query<MemoryBlockRow>(
-          `SELECT id, workspace_id, agent_id, key, value, scope, created_at, updated_at FROM agent_memory_blocks WHERE agent_id = ? AND key = ?`,
+          `SELECT id, workspace_id, agent_id, key, value, scope, expires_at, version, created_at, updated_at FROM agent_memory_blocks WHERE agent_id = ? AND key = ?`,
           [agentId, key],
         );
         return result.rows[0] ? mapMemoryBlock(result.rows[0]) : null;
+      },
+      async deleteByAgentAndKey(agentId: string, key: string): Promise<boolean> {
+        await db.query(
+          `DELETE FROM agent_memory_blocks WHERE agent_id = ? AND key = ?`,
+          [agentId, key],
+        );
+        return true;
+      },
+      async purgeExpired(): Promise<number> {
+        const now = new Date().toISOString();
+        const result = await db.query<{ cnt: number }>(
+          `SELECT COUNT(*) as cnt FROM agent_memory_blocks WHERE expires_at IS NOT NULL AND expires_at <= ?`,
+          [now],
+        );
+        const count = result.rows[0]?.cnt ?? 0;
+        await db.query(`DELETE FROM agent_memory_blocks WHERE expires_at IS NOT NULL AND expires_at <= ?`, [now]);
+        return Number(count);
       },
     },
 

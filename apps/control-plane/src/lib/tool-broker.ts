@@ -34,6 +34,7 @@ const AUTO_APPROVED_TOOLS = new Set([
   "create_handoff",
   "write_memory",
   "read_memory",
+  "delete_memory",
   "read_peer_output",
   "send_agent_message",
   "mark_message_read",
@@ -319,8 +320,8 @@ export function createToolBroker(
         {
           name: "write_memory",
           approval: "auto",
-          description: "Write a key-value pair to agent memory (private or workspace-scoped).",
-          argumentsSummary: "{ key, value, scope }",
+          description: "Write a key-value pair to agent memory (private or workspace-scoped). Supports optional TTL.",
+          argumentsSummary: "{ key, value, scope, ttlSeconds? }",
           inputSchema: {
             type: "object",
             additionalProperties: false,
@@ -332,6 +333,11 @@ export function createToolBroker(
                 enum: ["private", "workspace"],
                 description: "private: only this agent can read. workspace: all agents in workspace can read.",
               },
+              ttlSeconds: {
+                type: "number",
+                minimum: 1,
+                description: "Optional: seconds until this memory block expires and is automatically deleted. Omit for permanent storage.",
+              },
             },
             required: ["key", "value", "scope"],
           },
@@ -339,7 +345,7 @@ export function createToolBroker(
         {
           name: "read_memory",
           approval: "auto",
-          description: "Read memory blocks. Optionally filter by key, scope, or agentId.",
+          description: "Read memory blocks. Optionally filter by key, scope, or agentId. Expired blocks are excluded.",
           argumentsSummary: "{ key?, scope?, agentId? }",
           inputSchema: {
             type: "object",
@@ -354,6 +360,20 @@ export function createToolBroker(
               agentId: { type: "string", description: "Optional: filter to a specific agent (workspace scope only)." },
             },
             required: [],
+          },
+        },
+        {
+          name: "delete_memory",
+          approval: "auto",
+          description: "Delete a memory block by key. Only blocks written by this agent can be deleted.",
+          argumentsSummary: "{ key }",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              key: { type: "string", description: "The memory key to delete." },
+            },
+            required: ["key"],
           },
         },
         {
@@ -778,7 +798,11 @@ export function createToolBroker(
           const key = (typeof input.key === "string" ? input.key : "").slice(0, 128);
           if (!key) throw new Error("write_memory requires a non-empty key.");
           const scope = input.scope === "workspace" ? "workspace" : "private";
+          const ttlSeconds = typeof input.ttlSeconds === "number" && input.ttlSeconds > 0 ? input.ttlSeconds : null;
           const now = new Date().toISOString();
+          const expiresAt = ttlSeconds !== null
+            ? new Date(Date.now() + ttlSeconds * 1000).toISOString()
+            : null;
           const block = await repositories.memory.upsert({
             id: createId("mem"),
             workspaceId: context.run.workspaceId,
@@ -786,12 +810,20 @@ export function createToolBroker(
             key,
             value: typeof input.value === "string" ? input.value : String(input.value ?? ""),
             scope,
+            expiresAt,
+            version: 1,
             createdAt: now,
             updatedAt: now,
           });
           return {
             status: "completed",
-            output: { key: block.key, scope: block.scope, updatedAt: block.updatedAt },
+            output: {
+              key: block.key,
+              scope: block.scope,
+              version: block.version,
+              expiresAt: block.expiresAt ?? null,
+              updatedAt: block.updatedAt,
+            },
           };
         }
         case "read_memory": {
@@ -833,10 +865,28 @@ export function createToolBroker(
           return {
             status: "completed",
             output: {
-              blocks: blocks.map((b) => ({ key: b.key, value: b.value, scope: b.scope, agentId: b.agentId, updatedAt: b.updatedAt })),
+              blocks: blocks.map((b) => ({
+                key: b.key,
+                value: b.value,
+                scope: b.scope,
+                agentId: b.agentId,
+                version: b.version,
+                expiresAt: b.expiresAt ?? null,
+                updatedAt: b.updatedAt,
+              })),
               count: blocks.length,
             },
           };
+        }
+        case "delete_memory": {
+          const key = (typeof input.key === "string" ? input.key : "").trim();
+          if (!key) throw new Error("delete_memory requires a non-empty key.");
+          const existing = await repositories.memory.findByAgentAndKey(context.run.agentId, key);
+          if (!existing) {
+            return { status: "completed", output: { deleted: false, key, reason: "Not found" } };
+          }
+          await repositories.memory.deleteByAgentAndKey(context.run.agentId, key);
+          return { status: "completed", output: { deleted: true, key } };
         }
         case "read_peer_output": {
           const peerAgentId = typeof input.agentId === "string" ? input.agentId : "";

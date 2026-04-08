@@ -418,6 +418,10 @@ export interface AgentMemoryBlockRecord {
   key: string;
   value: string;
   scope: MemoryScope;
+  /** ISO timestamp after which this block should be treated as deleted. Null = never expires. */
+  expiresAt?: string | null;
+  /** Monotonically-increasing write counter; starts at 1, incremented on every upsert. */
+  version: number;
   createdAt: string;
   updatedAt: string;
 }

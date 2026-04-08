@@ -835,6 +835,20 @@ const embeddedMigrations: readonly EmbeddedMigration[] = [
       `);
     },
   },
+  {
+    name: "0013_memory_ttl_version.sql",
+    apply: async (db) => {
+      await ensureColumn(db, "agent_memory_blocks", "expires_at",
+        `ALTER TABLE agent_memory_blocks ADD COLUMN expires_at TEXT`);
+      await ensureColumn(db, "agent_memory_blocks", "version",
+        `ALTER TABLE agent_memory_blocks ADD COLUMN version INTEGER NOT NULL DEFAULT 1`);
+      await db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_memory_expiry
+          ON agent_memory_blocks(expires_at)
+          WHERE expires_at IS NOT NULL;
+      `);
+    },
+  },
 ] as const;
 
 type LoggerLike = Pick<Console, "info" | "warn" | "error">;

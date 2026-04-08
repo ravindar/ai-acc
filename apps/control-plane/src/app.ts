@@ -77,6 +77,17 @@ export async function createApp(services: AppServices) {
 
   void refreshPricingCache(); // non-blocking; falls back to baseline if ACC_PRICING_URL not set
 
+  // Purge expired memory blocks at startup + every 30 minutes.
+  const purgeMemory = async () => {
+    try {
+      const n = await services.repositories.memory.purgeExpired();
+      if (n > 0) app.log.info(`Purged ${n} expired memory block(s)`);
+    } catch { /* non-fatal */ }
+  };
+  void purgeMemory();
+  const purgeInterval = setInterval(() => { void purgeMemory(); }, 30 * 60 * 1000);
+  app.addHook("onClose", async () => { clearInterval(purgeInterval); });
+
   await registerHealthRoutes(app);
   await app.register(async (api) => {
     await registerWorkspaceRoutes(api);
