@@ -850,7 +850,9 @@ const embeddedMigrations: readonly EmbeddedMigration[] = [
     },
   },
   {
-    // SQLite CHECK constraints can't be altered; recreate agent_runs to add QUEUED and WAITING_INPUT states
+    // SQLite CHECK constraints can't be altered; recreate agent_runs to add QUEUED and WAITING_INPUT states.
+    // NOTE: the migration runner now disables foreign_keys before running any migration, so the
+    // ALTER TABLE RENAME will NOT rewrite FK references in child tables (the bug that 0015 repairs).
     name: "0014_agent_runs_queued_state.sql",
     apply: async (db) => {
       await db.exec(`
@@ -885,6 +887,106 @@ const embeddedMigrations: readonly EmbeddedMigration[] = [
         CREATE INDEX IF NOT EXISTS idx_agent_runs_agent ON agent_runs(agent_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_agent_runs_workspace ON agent_runs(workspace_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_runs_agent_created ON agent_runs(agent_id, created_at DESC);
+      `);
+    },
+  },
+  {
+    // Repair child tables whose FK text was rewritten to "agent_runs_old" by migration 0014
+    // when foreign_keys was ON during the ALTER TABLE RENAME.  The migration runner now disables
+    // FK enforcement before applying migrations, so this issue can never recur.
+    name: "0015_repair_agent_runs_fk.sql",
+    apply: async (db) => {
+      // transcript_entries
+      await db.exec(`
+        ALTER TABLE transcript_entries RENAME TO transcript_entries_v14;
+        CREATE TABLE transcript_entries (
+          id text primary key,
+          run_id text not null references agent_runs(id) on delete cascade,
+          workspace_id text not null references workspaces(id) on delete cascade,
+          agent_id text not null references agent_sessions(id) on delete cascade,
+          seq integer not null,
+          entry_type text not null check (entry_type in ('user', 'assistant', 'tool', 'system', 'error', 'approval')),
+          content text not null,
+          metadata text not null default '{}',
+          created_at text not null default current_timestamp,
+          unique(run_id, seq)
+        );
+        INSERT INTO transcript_entries SELECT * FROM transcript_entries_v14;
+        DROP TABLE transcript_entries_v14;
+        CREATE INDEX IF NOT EXISTS idx_transcript_entries_run ON transcript_entries(run_id, seq ASC);
+        CREATE INDEX IF NOT EXISTS idx_transcript_run_seq ON transcript_entries(run_id, seq ASC);
+      `);
+
+      // tool_calls — must be recreated before approval_requests (which references it)
+      await db.exec(`
+        ALTER TABLE tool_calls RENAME TO tool_calls_v14;
+        CREATE TABLE tool_calls (
+          id text primary key,
+          run_id text not null references agent_runs(id) on delete cascade,
+          workspace_id text not null references workspaces(id) on delete cascade,
+          agent_id text not null references agent_sessions(id) on delete cascade,
+          provider_call_id text,
+          approval_id text,
+          tool_name text not null,
+          status text not null check (status in ('requested', 'pending_approval', 'approved', 'denied', 'running', 'completed', 'error')),
+          input text not null,
+          output text,
+          requested_cwd text,
+          created_at text not null default current_timestamp,
+          updated_at text not null default current_timestamp
+        );
+        INSERT INTO tool_calls SELECT * FROM tool_calls_v14;
+        DROP TABLE tool_calls_v14;
+        CREATE INDEX IF NOT EXISTS idx_tool_calls_run ON tool_calls(run_id, created_at ASC);
+      `);
+
+      // approval_requests
+      await db.exec(`
+        ALTER TABLE approval_requests RENAME TO approval_requests_v14;
+        CREATE TABLE approval_requests (
+          id text primary key,
+          run_id text not null references agent_runs(id) on delete cascade,
+          workspace_id text not null references workspaces(id) on delete cascade,
+          agent_id text not null references agent_sessions(id) on delete cascade,
+          tool_call_id text not null unique references tool_calls(id) on delete cascade,
+          status text not null check (status in ('PENDING', 'APPROVED', 'DENIED')),
+          requested_action text not null,
+          requested_payload text not null,
+          reason text,
+          decision_message text,
+          created_at text not null default current_timestamp,
+          decided_at text
+        );
+        INSERT INTO approval_requests SELECT * FROM approval_requests_v14;
+        DROP TABLE approval_requests_v14;
+        CREATE INDEX IF NOT EXISTS idx_approval_requests_status ON approval_requests(status, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_approval_requests_workspace ON approval_requests(workspace_id, created_at DESC);
+      `);
+
+      // handoff_items
+      await db.exec(`
+        ALTER TABLE handoff_items RENAME TO handoff_items_v14;
+        CREATE TABLE handoff_items (
+          id text primary key,
+          workspace_id text not null references workspaces(id) on delete cascade,
+          source_agent_id text not null references agent_sessions(id) on delete cascade,
+          source_run_id text not null references agent_runs(id) on delete cascade,
+          assigned_agent_id text references agent_sessions(id) on delete set null,
+          title text not null,
+          summary text not null,
+          recommended_provider text not null,
+          recommended_model text not null,
+          next_prompt text not null,
+          artifact_ids text not null default '[]',
+          status text not null check (status in ('OPEN', 'ASSIGNED', 'DONE', 'DISMISSED')),
+          created_at text not null default current_timestamp,
+          updated_at text not null default current_timestamp,
+          auto_assign INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO handoff_items SELECT * FROM handoff_items_v14;
+        DROP TABLE handoff_items_v14;
+        CREATE INDEX IF NOT EXISTS idx_handoff_items_status ON handoff_items(status, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_handoff_items_workspace ON handoff_items(workspace_id, created_at DESC);
       `);
     },
   },
@@ -926,11 +1028,19 @@ export async function runMigrations(
       continue;
     }
 
-    await db.transaction(async (client) => {
-      await ensureMigrationTable(client);
-      await migration.apply(client);
-      await client.query(`insert into ${migrationTableName} (name) values (?)`, [migration.name]);
-    });
+    // Disable FK enforcement while applying schema migrations; individual migrations
+    // may rename/recreate tables and SQLite would otherwise rewrite FK references in
+    // sibling tables to point to the renamed names (breaking the schema).
+    await db.exec("pragma foreign_keys = off;");
+    try {
+      await db.transaction(async (client) => {
+        await ensureMigrationTable(client);
+        await migration.apply(client);
+        await client.query(`insert into ${migrationTableName} (name) values (?)`, [migration.name]);
+      });
+    } finally {
+      await db.exec("pragma foreign_keys = on;");
+    }
 
     executed.push(migration.name);
     logger.info(`applied migration ${migration.name}`);
