@@ -32,6 +32,8 @@ const AUTO_APPROVED_TOOLS = new Set([
   "git_diff",
   "run_verification_command",
   "create_handoff",
+  "list_tools",
+  "spawn_agent",
   "write_memory",
   "read_memory",
   "delete_memory",
@@ -40,7 +42,7 @@ const AUTO_APPROVED_TOOLS = new Set([
   "mark_message_read",
   "update_shared_context",
 ]);
-const APPROVAL_REQUIRED_TOOLS = new Set(["write_file", "apply_patch", "run_command"]);
+const APPROVAL_REQUIRED_TOOLS = new Set(["write_file", "apply_patch", "run_command", "spawn_agent"]);
 
 type LoggerLike = Pick<Console, "error" | "info" | "warn">;
 
@@ -243,11 +245,20 @@ async function discoverVerificationCommands(repoRoot: string): Promise<Verificat
   return [...commands.values()];
 }
 
+/** Minimal interface the tool-broker needs from the run orchestrator to spawn agents. */
+export interface SpawnOrchestrator {
+  startRun(agentId: string, prompt: string, title?: string): Promise<unknown>;
+}
+
 export interface ToolBroker {
   listTools(context: { workspace: WorkspaceRecord; worktree?: WorktreeRecord | null }): Promise<ToolDefinition[]>;
   requiresApproval(toolName: string): boolean;
   execute(context: ToolExecutionContext, call: ToolCallRecord): Promise<ToolExecutionResult>;
+  /** Wire up the run orchestrator after initialization to break the circular dependency. */
+  bindOrchestrator(orchestrator: SpawnOrchestrator): void;
 }
+
+const MAX_SPAWN_DEPTH = 2; // agents can spawn sub-agents up to 2 levels deep
 
 export function createToolBroker(
   config: AppConfig,
@@ -255,6 +266,7 @@ export function createToolBroker(
   coordinationService: CoordinationService,
   logger: LoggerLike = console,
 ): ToolBroker {
+  let orchestratorRef: SpawnOrchestrator | null = null;
   async function writeArtifact(run: AgentRunRecord, kind: "log" | "file" | "patch" | "trace", filename: string, contents: string): Promise<string> {
     const artifactDir = resolve(config.storageDir, "artifacts", run.id);
     await mkdir(artifactDir, { recursive: true });
@@ -283,9 +295,39 @@ export function createToolBroker(
     return context.worktree;
   }
 
-  return {
+  const toolBroker: ToolBroker = {
     async listTools({ workspace, worktree }) {
       const tools: ToolDefinition[] = [
+        {
+          name: "list_tools",
+          approval: "auto",
+          description: "List all tools available to this agent along with their names, descriptions, and argument signatures. Use this to discover what you can do before committing to a plan.",
+          argumentsSummary: "{}",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {},
+            required: [],
+          },
+        },
+        {
+          name: "spawn_agent",
+          approval: "manual",
+          description: `Spawn a new sub-agent in this workspace with a specific task. Requires operator approval. The spawned agent runs concurrently and its output can be read with read_peer_output. Max spawn depth: ${MAX_SPAWN_DEPTH}.`,
+          argumentsSummary: "{ title, prompt, provider, model, role? }",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              title: { type: "string", description: "Short descriptive title for the new agent (shown in UI)." },
+              prompt: { type: "string", description: "Initial task prompt for the new agent." },
+              provider: { type: "string", enum: ["claude", "codex"], description: "Provider for the new agent." },
+              model: { type: "string", description: "Model for the new agent (e.g. claude-sonnet-4-6)." },
+              role: { type: "string", description: "Optional role description for the system prompt." },
+            },
+            required: ["title", "prompt", "provider", "model"],
+          },
+        },
         {
           name: "create_handoff",
           approval: "auto",
@@ -761,6 +803,23 @@ export function createToolBroker(
             artifactIds,
           };
         }
+        case "list_tools": {
+          // Build the current tool list using the same context so the output reflects
+          // workspace-specific tools (e.g. run_verification_command).
+          const currentTools = await toolBroker.listTools({ workspace: context.workspace, worktree: context.worktree });
+          return {
+            status: "completed",
+            output: {
+              tools: currentTools.map((t) => ({
+                name: t.name,
+                description: t.description,
+                arguments: t.argumentsSummary,
+                requiresApproval: toolBroker.requiresApproval(t.name),
+              })),
+              count: currentTools.length,
+            },
+          };
+        }
         case "create_handoff": {
           const recommendedProvider = input.recommendedProvider === "claude" ? "claude" : "codex";
           const handoff = await repositories.handoffs.create({
@@ -966,10 +1025,69 @@ export function createToolBroker(
             output: { key, value, totalKeys, updatedAt: updated?.updatedAt ?? new Date().toISOString() },
           };
         }
+        case "spawn_agent": {
+          const title = (typeof input.title === "string" ? input.title : "").trim();
+          const prompt = (typeof input.prompt === "string" ? input.prompt : "").trim();
+          const provider = input.provider === "claude" ? "claude" : "codex";
+          const model = (typeof input.model === "string" ? input.model : "").trim();
+          if (!title || !prompt || !model) throw new Error("spawn_agent requires title, prompt, and model.");
+
+          // Enforce spawn depth limit.
+          const parentDepth = typeof context.agent.metadata.spawnDepth === "number" ? context.agent.metadata.spawnDepth : 0;
+          if (parentDepth >= MAX_SPAWN_DEPTH) {
+            throw new Error(`spawn_agent: maximum sub-agent depth (${MAX_SPAWN_DEPTH}) reached. Cannot spawn further.`);
+          }
+
+          if (!orchestratorRef) throw new Error("spawn_agent: orchestrator not available.");
+
+          const now = new Date().toISOString();
+          const newAgent = await repositories.agents.create({
+            id: createId("ag"),
+            workspaceId: context.run.workspaceId,
+            provider,
+            model,
+            title,
+            state: "CREATED",
+            lastEventAt: now,
+            heartbeatAt: now,
+            usage: { totalCostUsd: 0, totalInputTokens: 0, totalOutputTokens: 0 },
+            metadata: {
+              role: typeof input.role === "string" ? input.role : title,
+              initialTask: prompt,
+              spawnedBy: context.agent.id,
+              spawnDepth: parentDepth + 1,
+              cwd: context.workspace.projectRoot,
+            },
+          });
+
+          await coordinationService.refreshWorkspaceState(context.run.workspaceId);
+
+          // Fire-and-forget: start the run asynchronously after returning the tool result.
+          void orchestratorRef.startRun(newAgent.id, prompt, title).catch((err: unknown) => {
+            logger.warn(`[tool-broker] spawn_agent: startRun failed for ${newAgent.id}: ${String(err)}`);
+          });
+
+          return {
+            status: "completed",
+            output: {
+              agentId: newAgent.id,
+              title: newAgent.title,
+              provider: newAgent.provider,
+              model: newAgent.model,
+              spawnDepth: parentDepth + 1,
+              message: `Sub-agent "${title}" spawned and starting. Use read_peer_output(agentId: "${newAgent.id}") to monitor its progress.`,
+            },
+          };
+        }
         default:
           logger.warn(`unknown tool requested: ${call.toolName}`);
           throw new Error(`Unknown tool requested: ${call.toolName}`);
       }
     },
+
+    bindOrchestrator(orchestrator: SpawnOrchestrator): void {
+      orchestratorRef = orchestrator;
+    },
   };
+  return toolBroker;
 }

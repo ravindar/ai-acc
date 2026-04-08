@@ -62,6 +62,9 @@ export async function createServices(config: AppConfig): Promise<AppServices> {
       coordinationService,
     );
 
+    // Wire the run orchestrator into the tool broker so spawn_agent can start runs.
+    toolBroker.bindOrchestrator(runOrchestrator);
+
     await runtimeManager.recoverDetachedSessions();
     await runOrchestrator.recoverInterruptedRuns();
 

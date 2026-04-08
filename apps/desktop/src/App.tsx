@@ -8216,11 +8216,24 @@ export function App() {
                             (queueItem) => queueItem.agentId === agentThread.agentId,
                           );
 
+                          const agentMeta = agents.find((a) => a.id === agentThread.agentId)?.metadata;
+                          const isSpawnedAgent = typeof agentMeta?.spawnedBy === "string";
+                          const spawnDepth = typeof agentMeta?.spawnDepth === "number" ? agentMeta.spawnDepth : 0;
+
                           return (
                             <section key={`${group.prompt.id}-${agentThread.agentId}`} className="workspace-agent-thread">
                               <div className="workspace-agent-thread-header">
                                 <div className="workspace-agent-thread-title">
                                   <strong>{agentThread.agentTitle}</strong>
+                                  {isSpawnedAgent && (
+                                    <span
+                                      className="compact-note"
+                                      style={{ opacity: 0.7, fontSize: "0.72em" }}
+                                      title={`Sub-agent spawned by ${String(agentMeta?.spawnedBy ?? "another agent")} (depth ${spawnDepth})`}
+                                    >
+                                      ⤷ L{spawnDepth}
+                                    </span>
+                                  )}
                                   <div className="compact-notices">
                                     {latestReply ? (
                                       <span
