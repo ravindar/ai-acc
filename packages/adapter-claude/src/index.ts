@@ -77,6 +77,8 @@ type ClaudeSession = {
 type UsageAccumulator = {
   inputTokens: number;
   outputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
 };
 
 const ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1";
@@ -260,6 +262,8 @@ function extractUsage(payload: unknown): UsageAccumulator {
   return {
     inputTokens: toNumber(usage?.input_tokens ?? usage?.inputTokens),
     outputTokens: toNumber(usage?.output_tokens ?? usage?.outputTokens),
+    cacheCreationInputTokens: toNumber(usage?.cache_creation_input_tokens),
+    cacheReadInputTokens: toNumber(usage?.cache_read_input_tokens),
   };
 }
 
@@ -413,6 +417,8 @@ export class ClaudeAdapter implements AgentAdapter {
       const usage: UsageAccumulator = {
         inputTokens: 0,
         outputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
       };
       const contentBlocks = new Map<number, ClaudeContentAccumulator>();
 
@@ -432,6 +438,8 @@ export class ClaudeAdapter implements AgentAdapter {
             const streamedUsage = extractUsage(message);
             usage.inputTokens = Math.max(usage.inputTokens, streamedUsage.inputTokens);
             usage.outputTokens = Math.max(usage.outputTokens, streamedUsage.outputTokens);
+            usage.cacheCreationInputTokens = Math.max(usage.cacheCreationInputTokens, streamedUsage.cacheCreationInputTokens);
+            usage.cacheReadInputTokens = Math.max(usage.cacheReadInputTokens, streamedUsage.cacheReadInputTokens);
             return;
           }
           case "content_block_start": {
@@ -501,6 +509,8 @@ export class ClaudeAdapter implements AgentAdapter {
             const streamedUsage = extractUsage(record);
             usage.inputTokens = Math.max(usage.inputTokens, streamedUsage.inputTokens);
             usage.outputTokens = Math.max(usage.outputTokens, streamedUsage.outputTokens);
+            usage.cacheCreationInputTokens = Math.max(usage.cacheCreationInputTokens, streamedUsage.cacheCreationInputTokens);
+            usage.cacheReadInputTokens = Math.max(usage.cacheReadInputTokens, streamedUsage.cacheReadInputTokens);
             return;
           }
           case "message_stop":
@@ -520,8 +530,14 @@ export class ClaudeAdapter implements AgentAdapter {
       const pricing = getPricing(session.model);
       const costUsd = pricing
         ? roundCurrency(
+            // Regular input tokens
             (usage.inputTokens / 1_000_000) * pricing.inputPerMillion +
-              (usage.outputTokens / 1_000_000) * pricing.outputPerMillion,
+            // Cache creation: 1.25× input price
+            (usage.cacheCreationInputTokens / 1_000_000) * pricing.inputPerMillion * 1.25 +
+            // Cache read: 0.10× input price
+            (usage.cacheReadInputTokens / 1_000_000) * pricing.inputPerMillion * 0.10 +
+            // Output tokens
+            (usage.outputTokens / 1_000_000) * pricing.outputPerMillion,
           )
         : 0;
 

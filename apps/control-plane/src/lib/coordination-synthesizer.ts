@@ -12,13 +12,13 @@
 const SYNTHESIS_MODEL = "claude-haiku-4-5-20251001";
 const TRANSCRIPT_WINDOW = 8_000;
 
-// Haiku pricing (per million tokens)
-const HAIKU_INPUT_COST_PER_M = 0.80;
-const HAIKU_OUTPUT_COST_PER_M = 4.00;
+import { getPricing } from "@acc/pricing";
 
 export function calcSynthesisCost(inputTokens: number, outputTokens: number): number {
-  return (inputTokens / 1_000_000) * HAIKU_INPUT_COST_PER_M +
-         (outputTokens / 1_000_000) * HAIKU_OUTPUT_COST_PER_M;
+  const pricing = getPricing(SYNTHESIS_MODEL);
+  const inputRate = pricing?.inputPerMillion ?? 1.00;
+  const outputRate = pricing?.outputPerMillion ?? 5.00;
+  return (inputTokens / 1_000_000) * inputRate + (outputTokens / 1_000_000) * outputRate;
 }
 
 /** Last user-actionable warning from the synthesizer. Reset on success, set on known API errors. */
