@@ -420,50 +420,67 @@ export function createRunOrchestrator(
         return;
       }
 
-      if (toolCalls.length > 1) {
-        throw new Error("Parallel tool calls are not supported in this production alpha build.");
+      // Create DB records for all requested tool calls.
+      const createdToolCalls = await Promise.all(
+        toolCalls.map((requestedTool) =>
+          repositories.toolCalls.create({
+            id: createId("tc"),
+            runId,
+            workspaceId: lookup.workspace.id,
+            agentId,
+            providerCallId: requestedTool.callId,
+            approvalId: undefined,
+            toolName: requestedTool.name,
+            status: "requested",
+            input: requestedTool.arguments,
+            output: undefined,
+            requestedCwd: typeof requestedTool.arguments.cwd === "string" ? requestedTool.arguments.cwd : worktree?.path,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          }),
+        ),
+      );
+
+      // Emit TOOL_CALL_STARTED events and transcript entries for all tool calls.
+      await Promise.all(createdToolCalls.map((tc) => appendToolRequestedEvent(lookup.agent, lookup.workspace.id, tc)));
+      for (let i = 0; i < createdToolCalls.length; i++) {
+        const tc = createdToolCalls[i];
+        const requestedTool = toolCalls[i];
+        await appendTranscript({
+          id: createId("tr"),
+          runId,
+          workspaceId: lookup.workspace.id,
+          agentId,
+          entryType: "tool",
+          content: `${requestedTool.name} requested.`,
+          metadata: {
+            toolCallId: tc.id,
+            providerCallId: requestedTool.callId,
+            input: requestedTool.arguments,
+          },
+          createdAt: new Date().toISOString(),
+        });
       }
 
-      const requestedTool = toolCalls[0];
-      const toolCall = await repositories.toolCalls.create({
-        id: createId("tc"),
-        runId,
-        workspaceId: lookup.workspace.id,
-        agentId,
-        providerCallId: requestedTool.callId,
-        approvalId: undefined,
-        toolName: requestedTool.name,
-        status: "requested",
-        input: requestedTool.arguments,
-        output: undefined,
-        requestedCwd: typeof requestedTool.arguments.cwd === "string" ? requestedTool.arguments.cwd : worktree?.path,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      });
+      // Separate into approval-required and auto-execute groups.
+      const firstApprovalIdx = toolCalls.findIndex((tc) => toolBroker.requiresApproval(tc.name));
 
-      await appendToolRequestedEvent(lookup.agent, lookup.workspace.id, toolCall);
-      await appendTranscript({
-        id: createId("tr"),
-        runId,
-        workspaceId: lookup.workspace.id,
-        agentId,
-        entryType: "tool",
-        content: `${requestedTool.name} requested.`,
-        metadata: {
-          toolCallId: toolCall.id,
-          providerCallId: requestedTool.callId,
-          input: requestedTool.arguments,
-        },
-        createdAt: new Date().toISOString(),
-      });
+      if (firstApprovalIdx >= 0) {
+        // Gate on the first approval-needing tool call; auto tools in the same batch are deferred.
+        if (toolCalls.length > 1) {
+          logger.warn(
+            `[orchestrator] ${toolCalls.length} tool calls in batch — pausing on approval for "${toolCalls[firstApprovalIdx].name}", deferring ${toolCalls.length - 1} others`,
+          );
+        }
+        const approvalToolCall = createdToolCalls[firstApprovalIdx];
+        const requestedTool = toolCalls[firstApprovalIdx];
 
-      if (toolBroker.requiresApproval(requestedTool.name)) {
         const approval = await repositories.approvals.create({
           id: createId("apr"),
           runId,
           workspaceId: lookup.workspace.id,
           agentId,
-          toolCallId: toolCall.id,
+          toolCallId: approvalToolCall.id,
           status: "PENDING",
           requestedAction: requestedTool.name,
           requestedPayload: requestedTool.arguments,
@@ -473,7 +490,7 @@ export function createRunOrchestrator(
           decidedAt: undefined,
         });
 
-        await repositories.toolCalls.update(toolCall.id, {
+        await repositories.toolCalls.update(approvalToolCall.id, {
           approvalId: approval.id,
           status: "pending_approval",
         });
@@ -510,48 +527,61 @@ export function createRunOrchestrator(
           runId,
           agentId,
           workspaceId: lookup.workspace.id,
-          toolCallId: toolCall.id,
+          toolCallId: approvalToolCall.id,
           nextIteration: iteration + 1,
         });
         return;
       }
 
-      const { persistedToolCall, result: toolResult } = await executeToolCall(
-        run ?? {
-          id: runId,
-          workspaceId: lookup.workspace.id,
-          agentId,
-          title: "",
-          prompt: request.input ?? "",
-          state: "RUNNING",
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          startedAt: new Date().toISOString(),
-        },
-        lookup.agent,
-        lookup.workspace,
-        worktree,
-        toolCall,
+      // No approval needed — execute all tool calls concurrently.
+      if (toolCalls.length > 1) {
+        logger.info(`[orchestrator] Executing ${toolCalls.length} tool calls in parallel`);
+      }
+      const runFallback: AgentRunRecord = run ?? {
+        id: runId,
+        workspaceId: lookup.workspace.id,
+        agentId,
+        title: "",
+        prompt: request.input ?? "",
+        state: "RUNNING",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        startedAt: new Date().toISOString(),
+      };
+
+      const parallelResults = await Promise.allSettled(
+        createdToolCalls.map((tc) =>
+          executeToolCall(runFallback, lookup.agent, lookup.workspace, worktree, tc),
+        ),
       );
 
-      if (toolResult.status !== "completed") {
-        await coordinationService.onBlockerDetected(
-          lookup.workspace.id,
-          agentId,
-          `Tool ${requestedTool.name} failed`,
-          requestedTool.name,
-        );
+      const adapterToolResults: AdapterToolResult[] = [];
+      for (let i = 0; i < createdToolCalls.length; i++) {
+        const settled = parallelResults[i];
+        const tc = createdToolCalls[i];
+        const requestedTool = toolCalls[i];
+
+        if (settled.status === "fulfilled") {
+          const { persistedToolCall, result: toolResult } = settled.value;
+          if (toolResult.status !== "completed") {
+            await coordinationService.onBlockerDetected(
+              lookup.workspace.id,
+              agentId,
+              `Tool ${requestedTool.name} failed`,
+              requestedTool.name,
+            );
+          }
+          adapterToolResults.push(toAdapterToolResult(persistedToolCall.providerCallId ?? requestedTool.callId, toolResult));
+        } else {
+          // Unexpected throw from executeToolCall itself (rare — it normally catches internally).
+          const errMsg = settled.reason instanceof Error ? settled.reason.message : "Tool execution failed";
+          const errorResult: ToolExecutionResult = { status: "error", output: { message: errMsg } };
+          await handleToolResult(runFallback, lookup.agent, tc, errorResult);
+          adapterToolResults.push(toAdapterToolResult(tc.providerCallId ?? requestedTool.callId, errorResult));
+        }
       }
 
-      const providerCallId = persistedToolCall.providerCallId ?? requestedTool.callId;
-      await continueRun(
-        runId,
-        agentId,
-        {
-          toolResults: [toAdapterToolResult(providerCallId, toolResult)],
-        },
-        iteration + 1,
-      );
+      await continueRun(runId, agentId, { toolResults: adapterToolResults }, iteration + 1);
     } catch (error) {
       const rawMessage = error instanceof Error ? error.message : "Run execution failed";
       const message = isRateLimitError(rawMessage)
