@@ -44,9 +44,11 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilities> = {
   "gpt-4-turbo":   { contextWindow: 128_000, maxOutputTokens: 4_096,  supportsCache: false, supportsTools: true, supportsVision: true },
   "o1":            { contextWindow: 200_000, maxOutputTokens: 100_000, supportsCache: false, supportsTools: false, supportsVision: false },
   "o3-mini":       { contextWindow: 200_000, maxOutputTokens: 100_000, supportsCache: false, supportsTools: false, supportsVision: false },
-  // Codex
-  "gpt-5-codex":   { contextWindow: 32_000, maxOutputTokens: 8_192,  supportsCache: false, supportsTools: true, supportsVision: false },
-  "gpt-5.2-codex": { contextWindow: 32_000, maxOutputTokens: 8_192,  supportsCache: false, supportsTools: true, supportsVision: false },
+  // Codex / OpenAI o-series
+  "codex-mini-latest": { contextWindow: 200_000, maxOutputTokens: 100_000, supportsCache: false, supportsTools: true, supportsVision: false },
+  "o4-mini":           { contextWindow: 200_000, maxOutputTokens: 100_000, supportsCache: false, supportsTools: true, supportsVision: false },
+  "gpt-5-codex":       { contextWindow:  32_000, maxOutputTokens:   8_192, supportsCache: false, supportsTools: true, supportsVision: false },
+  "gpt-5.2-codex":     { contextWindow:  32_000, maxOutputTokens:   8_192, supportsCache: false, supportsTools: true, supportsVision: false },
 };
 
 // Baseline hardcoded pricing — always available as fallback
