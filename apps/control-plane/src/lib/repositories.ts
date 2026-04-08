@@ -528,6 +528,8 @@ function parseCoordinationTeamAsk(value: string | null | undefined): Coordinatio
         typeof record.recommendedResponseShape === "string" && validResponseShapes.has(record.recommendedResponseShape)
           ? (record.recommendedResponseShape as CoordinationTeamAskRecord["recommendedResponseShape"])
           : "direction",
+      synthesized: record.synthesized === true,
+      dismissed: record.dismissed === true,
       updatedAt: record.updatedAt,
     };
   } catch {
@@ -1198,6 +1200,7 @@ export interface Repositories {
   coordination: {
     findByWorkspaceId(workspaceId: string): Promise<CoordinationStateRecord | null>;
     upsert(state: CoordinationStateRecord): Promise<CoordinationStateRecord>;
+    dismissTeamAsk(workspaceId: string): Promise<void>;
   };
   contexts: {
     list(workspaceId?: string): Promise<ContextPackRecord[]>;
@@ -1812,6 +1815,16 @@ export function createRepositories(db: Database): Repositories {
           throw new Error(`Failed to persist workspace coordination state for ${state.workspaceId}`);
         }
         return refreshed;
+      },
+
+      async dismissTeamAsk(workspaceId: string): Promise<void> {
+        const existing = await this.findByWorkspaceId(workspaceId);
+        if (!existing?.teamAsk) return;
+        const dismissed = { ...existing.teamAsk, dismissed: true };
+        await db.query(
+          `update workspace_coordination_states set team_ask = ?, updated_at = ? where workspace_id = ?`,
+          [JSON.stringify(dismissed), new Date().toISOString(), workspaceId],
+        );
       },
     },
 

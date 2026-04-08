@@ -77,7 +77,10 @@ const RECOVERABLE_RUNTIME_STATES = new Set<AgentState>([
   "STARTING",
   "READY",
   "RUNNING",
-  "WAITING_INPUT",
+  // WAITING_INPUT is intentionally excluded: the LLM has already finished generating and the run
+  // is simply parked waiting for the next user message. There is no live provider stream to tear
+  // down, and the agent should stay in WAITING_INPUT after a restart so the team ask card is
+  // preserved until the user responds.
   "IDLE",
 ]);
 

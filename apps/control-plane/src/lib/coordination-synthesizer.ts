@@ -20,8 +20,9 @@ import { type AgentEvent } from "@acc/adapter-sdk";
 import { createId } from "./ids.js";
 
 const SYNTHESIS_MODEL = "claude-haiku-4-5-20251001";
-// Only send the tail of long transcripts to keep token cost low.
-const TRANSCRIPT_WINDOW = 1_500;
+// Send a generous window so Haiku sees the full question/context, not just the final sentence.
+// Haiku has a 200k context window — even 10 agents × 8k chars is well within limits.
+const TRANSCRIPT_WINDOW = 8_000;
 
 export interface WaitingAgentInput {
   agentId: string;
@@ -41,11 +42,12 @@ const SYSTEM_PROMPT = `You are an internal coordinator for a multi-agent AI deve
 Your job is to read what waiting agents have written and produce a clear, actionable summary for the human operator.
 
 Rules:
-- Be specific about what the agents actually need. Name the specific action, decision, file, credential, or permission required.
+- Extract the EXACT question or decision the agent is asking. If the agent presented options (a/b/c), reproduce those options clearly.
+- Be specific. Name the specific action, decision, file, credential, or permission required.
 - Do NOT use vague phrases like "needs guidance", "awaiting instruction", "paused and waiting".
 - If multiple agents need the same thing (e.g. access to a directory), say so once in the team summary.
-- Team summary: 1–2 sentences, no bullet points.
-- Per-agent summary: 1 sentence, specific to what that agent wrote.
+- Team summary: 1–2 sentences covering what all agents collectively need.
+- Per-agent summary: Capture the agent's actual question. If they gave the operator explicit choices, include those choices. 2–4 sentences is fine if needed to preserve the question.
 - Reply ONLY with valid JSON matching the schema below. No prose outside the JSON.`;
 
 function buildPrompt(agents: WaitingAgentInput[], workspaceTask?: string): string {
@@ -72,7 +74,7 @@ function buildPrompt(agents: WaitingAgentInput[], workspaceTask?: string): strin
   lines.push(`  "teamSummary": "<1-2 sentences: what all agents collectively need from the operator>",`);
   lines.push(`  "agentSummaries": {`);
   for (const agent of agents) {
-    lines.push(`    "${agent.agentTitle}": "<1 sentence: specific ask for this agent>",`);
+    lines.push(`    "${agent.agentTitle}": "<specific ask for this agent — include any choices/options the agent presented>",`);
   }
   lines.push(`  }`);
   lines.push(`}`);

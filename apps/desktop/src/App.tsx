@@ -68,6 +68,7 @@ import {
   updateWorkspaceCoordination,
   updateWorkspace,
   denyApproval,
+  dismissTeamAsk,
 } from "./lib/api";
 
 type FilterId = "all" | "active" | "idle" | "errors";
@@ -132,6 +133,7 @@ type WorkspaceInlineActionRequest = {
 type WorkspaceAgentThread = {
   agentId: string;
   agentTitle: string;
+  agentState: string;
   replies: WorkspaceConversationReply[];
   approvals: WorkspaceConversationReply[];
   needsInput: boolean;
@@ -1424,6 +1426,34 @@ export function App() {
     localStorage.setItem("acc-theme", theme);
   }, [theme]);
 
+  // Zoom: stored as a number 0.5–2.0, default 1.0
+  const [zoom, setZoom] = useState<number>(() => {
+    const saved = localStorage.getItem("acc-zoom");
+    const parsed = saved ? parseFloat(saved) : 1;
+    return Number.isFinite(parsed) ? Math.min(2, Math.max(0.5, parsed)) : 1;
+  });
+  useEffect(() => {
+    document.documentElement.style.setProperty("zoom", String(zoom));
+    localStorage.setItem("acc-zoom", String(zoom));
+  }, [zoom]);
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.key === "=" || e.key === "+") {
+        e.preventDefault();
+        setZoom((z) => Math.min(2, Math.round((z + 0.1) * 10) / 10));
+      } else if (e.key === "-") {
+        e.preventDefault();
+        setZoom((z) => Math.max(0.5, Math.round((z - 0.1) * 10) / 10));
+      } else if (e.key === "0") {
+        e.preventDefault();
+        setZoom(1);
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, []);
+
   const commandPaletteInputRef = useRef<HTMLInputElement | null>(null);
   const agentTitleLookupRef = useRef<Map<string, string>>(new Map());
   const previousAgentSnapshotsRef = useRef<Map<string, { state: AgentSessionRecord["state"]; lastEventAt: string; preview: string }>>(
@@ -1869,6 +1899,13 @@ export function App() {
 
   const updateHandoffStatusMutation = useMutation({
     mutationFn: updateHandoffStatus,
+  });
+
+  const dismissTeamAskMutation = useMutation({
+    mutationFn: dismissTeamAsk,
+    onSuccess: () => {
+      void workspaceOverviewQuery.refetch();
+    },
   });
 
   const overview = workspaceOverviewQuery.data;
@@ -2682,6 +2719,7 @@ export function App() {
             agentThreads.push({
               agentId,
               agentTitle: agent.title,
+              agentState: agent.state,
               replies,
               approvals,
               needsInput,
@@ -2731,12 +2769,13 @@ export function App() {
           return Date.parse(left.ts) - Date.parse(right.ts);
         });
 
+        // Show the team ask card if it exists in coordination state and has not been dismissed.
+        // The carry-forward logic on the backend preserves asks across restarts, so we don't
+        // filter by active needs_input request IDs here.
         const teamAsk =
           !workspaceFocusedAgent &&
           workspaceCoordinationState?.teamAsk &&
-          coordinationNeedsInputRequestIds.some((requestId) =>
-            workspaceCoordinationState.teamAsk?.requestIds.includes(requestId),
-          )
+          !workspaceCoordinationState.teamAsk.dismissed
             ? {
                 id: workspaceCoordinationState.teamAsk.id,
                 title: workspaceCoordinationState.teamAsk.title,
@@ -7747,9 +7786,13 @@ export function App() {
                 const teamAskSupplementalQueue = group.teamAsk
                   ? visibleCoordinationQueue.filter((queueItem) => queueItem.kind !== "needs_input")
                   : [];
+                // Include both WAITING_INPUT agents (needsInput) and ERROR agents in the team ask
+                // so the operator can see which agents need attention and which have errored.
                 const teamAskAgentThreads = group.teamAsk
                   ? group.agentThreads.filter(
-                      (agentThread) => agentThread.needsInput && group.teamAsk?.agentIds.includes(agentThread.agentId),
+                      (agentThread) =>
+                        group.teamAsk?.agentIds.includes(agentThread.agentId) &&
+                        (agentThread.needsInput || agentThread.agentState === "ERROR"),
                     )
                   : [];
 
@@ -8316,9 +8359,15 @@ export function App() {
                                     : "Needs direction"}
                             </span>
                           </div>
-                          <div className="thread-message-markdown workspace-action-request-copy">
-                            {renderMarkdownBlocks(group.teamAsk.summary)}
-                          </div>
+                          {/* Only show the summary block when it adds something beyond the per-agent rows:
+                              - synthesized = LLM produced a unique unified headline
+                              - agentIds.length > 1 = count sentence is useful context
+                              For a single un-synthesized agent the per-agent row already shows the content. */}
+                          {(group.teamAsk.synthesized || group.teamAsk.agentIds.length > 1) ? (
+                            <div className="thread-message-markdown workspace-action-request-copy">
+                              {renderMarkdownBlocks(group.teamAsk.summary)}
+                            </div>
+                          ) : null}
                           {group.teamAsk.detail && !isDuplicateLike(group.teamAsk.summary, group.teamAsk.detail) ? (
                             <p className="thread-message-detail">{group.teamAsk.detail}</p>
                           ) : null}
@@ -8355,27 +8404,57 @@ export function App() {
                                     explicitAgentAsk,
                                   );
 
+                                const isAgentErrored = agentThread.agentState === "ERROR";
+                                const errorReply = isAgentErrored
+                                  ? [...agentThread.replies].reverse().find((r) => r.kind === "error" || r.kind === "rate_limit") ?? null
+                                  : null;
+
                                 return (
                                   <div
                                     key={`team-ask-${group.prompt.id}-${agentThread.agentId}`}
-                                    className="workspace-team-ask-agent"
+                                    className={`workspace-team-ask-agent${isAgentErrored ? " workspace-team-ask-agent-error" : ""}`}
                                   >
                                     <div className="workspace-team-ask-agent-meta">
-                                      <strong>{agentThread.agentTitle}</strong>
-                                      <span>{actionRequestCopy.content}</span>
+                                      <strong>
+                                        {agentThread.agentTitle}
+                                        {isAgentErrored && (
+                                          <span className="agent-error-badge">Error</span>
+                                        )}
+                                      </strong>
+                                      {isAgentErrored ? (
+                                        <span className="workspace-team-ask-agent-error-msg">
+                                          {errorReply?.content ?? "Agent stopped with an error. Focus the agent to retry."}
+                                        </span>
+                                      ) : (
+                                        <span>{actionRequestCopy.content}</span>
+                                      )}
                                     </div>
                                     <button
                                       className="outline-button outline-button-small"
                                       onClick={() => focusWorkspaceAgent(agentThread.agentId)}
                                       type="button"
                                     >
-                                      Reply separately
+                                      {isAgentErrored ? "Focus & retry" : "Reply separately"}
                                     </button>
                                   </div>
                                 );
                               })}
                             </div>
                           ) : null}
+                          <div className="workspace-team-ask-footer">
+                            <button
+                              className="outline-button outline-button-small"
+                              onClick={() => {
+                                if (activeWorkspaceId) {
+                                  dismissTeamAskMutation.mutate(activeWorkspaceId);
+                                }
+                              }}
+                              disabled={dismissTeamAskMutation.isPending}
+                              type="button"
+                            >
+                              Dismiss
+                            </button>
+                          </div>
                           {/* Follow-up / handoff items are shown in the coordination queue
                               section above the thread nest — not duplicated here. */}
                         </article>
@@ -10320,6 +10399,11 @@ export function App() {
               >
                 {theme === "dark" ? "Light" : "Dark"}
               </button>
+              <div className="zoom-controls">
+                <button className="outline-button zoom-btn" onClick={() => setZoom((z) => Math.max(0.5, Math.round((z - 0.1) * 10) / 10))} type="button" title="Zoom out (⌘-)">−</button>
+                <button className="outline-button zoom-reset" onClick={() => setZoom(1)} type="button" title="Reset zoom (⌘0)">{zoom === 1 ? "100%" : `${Math.round(zoom * 100)}%`}</button>
+                <button className="outline-button zoom-btn" onClick={() => setZoom((z) => Math.min(2, Math.round((z + 0.1) * 10) / 10))} type="button" title="Zoom in (⌘+)">+</button>
+              </div>
               {activeMenu !== "settings" && homeThread.kind !== "planner" ? (
                 <button
                   className="outline-button"

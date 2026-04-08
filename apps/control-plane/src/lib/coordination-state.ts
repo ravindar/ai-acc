@@ -543,28 +543,17 @@ function summarizeTeamAsk(
     recommendedResponseShape = "input";
   }
 
-  // For multi-agent team asks, build a summary that shows what each agent actually did/needs
-  // rather than a generic count. Show up to 2 agents in the headline, full list in detail.
+  // For multi-agent team asks, build a simple count headline.
+  // Individual agent asks are surfaced in the per-agent rows rendered below in the UI —
+  // repeating them here would duplicate content.
   const multiAgentSummary = (() => {
     if (groupedAsks.length === 1) return groupedAsks[0]!.summary;
-    // Use the first 2 agent asks to form the headline, trimming to reasonable length.
-    const parts = groupedAsks.slice(0, 2).map((entry) => {
-      const agentLabel = uniqueStrings(entry.agents).slice(0, 1)[0] ?? "Agent";
-      // Truncate each agent's summary to ~100 chars so the headline stays readable.
-      const agentSummary =
-        entry.summary.length > 100 ? `${entry.summary.slice(0, 97)}…` : entry.summary;
-      return `**${agentLabel}**: ${agentSummary}`;
-    });
-    const remainder = groupedAsks.length - 2;
-    return parts.join("\n") + (remainder > 0 ? `\n…and ${remainder} more agent${remainder > 1 ? "s" : ""}.` : "");
+    const count = agentIds.length;
+    return `${count} agent${count === 1 ? " is" : "s are"} paused and waiting for your direction.`;
   })();
 
-  const multiAgentDetail = (() => {
-    if (groupedAsks.length === 1) return groupedAsks[0]!.detail;
-    return groupedAsks
-      .map((entry) => `**${uniqueStrings(entry.agents).join(", ")}**: ${entry.summary}`)
-      .join("\n\n");
-  })();
+  // For multi-agent, detail is omitted — per-agent rows in the UI show the full ask content.
+  const multiAgentDetail = groupedAsks.length === 1 ? groupedAsks[0]!.detail : undefined;
 
   return {
     id,
@@ -608,7 +597,7 @@ async function loadLatestRunContextBatch(
   repositories: Repositories,
   agents: AgentSessionRecord[],
 ): Promise<
-  Map<string, { latestRun: AgentRunRecord | null; latestTranscriptEntry: TranscriptEntryRecord | null }>
+  Map<string, { latestRun: AgentRunRecord | null; latestTranscriptEntry: TranscriptEntryRecord | null; fullAssistantContent: string }>
 > {
   const agentIds = agents.map((a) => a.id);
   const allRuns = await repositories.runs.listLatestBatchForAgents(agentIds, 6);
@@ -625,7 +614,7 @@ async function loadLatestRunContextBatch(
   const allRunIds = allRuns.map((r) => r.id);
   const allTranscript = await repositories.transcript.listLatestBatchForRuns(allRunIds, 100);
 
-  // Group transcript entries by runId
+  // Group transcript entries by runId (in chronological order — listLatestBatchForRuns returns DESC, reversed per run)
   const transcriptByRun = new Map<string, TranscriptEntryRecord[]>();
   for (const entry of allTranscript) {
     const group = transcriptByRun.get(entry.runId) ?? [];
@@ -633,10 +622,10 @@ async function loadLatestRunContextBatch(
     transcriptByRun.set(entry.runId, group);
   }
 
-  // Build per-agent results matching the old loadLatestRunContext shape
+  // Build per-agent results
   const result = new Map<
     string,
-    { latestRun: AgentRunRecord | null; latestTranscriptEntry: TranscriptEntryRecord | null }
+    { latestRun: AgentRunRecord | null; latestTranscriptEntry: TranscriptEntryRecord | null; fullAssistantContent: string }
   >();
 
   for (const agent of agents) {
@@ -646,20 +635,23 @@ async function loadLatestRunContextBatch(
 
     for (const run of runs) {
       const transcript = transcriptByRun.get(run.id) ?? [];
-      const latestTranscriptEntry =
-        [...transcript]
-          .reverse()
-          .find((entry) => entry.entryType === "assistant" || entry.entryType === "error") ?? null;
+      const assistantEntries = transcript.filter(
+        (entry) => entry.entryType === "assistant" || entry.entryType === "error",
+      );
+      const latestTranscriptEntry = [...assistantEntries].reverse()[0] ?? null;
 
       if (latestTranscriptEntry) {
-        result.set(agent.id, { latestRun: run, latestTranscriptEntry });
+        // Concatenate ALL assistant entries from this run so callers get the full response,
+        // not just the last chunk (long LLM outputs often span multiple transcript rows).
+        const fullAssistantContent = assistantEntries.map((e) => e.content).join("\n\n");
+        result.set(agent.id, { latestRun: run, latestTranscriptEntry, fullAssistantContent });
         found = true;
         break;
       }
     }
 
     if (!found) {
-      result.set(agent.id, { latestRun, latestTranscriptEntry: null });
+      result.set(agent.id, { latestRun, latestTranscriptEntry: null, fullAssistantContent: "" });
     }
   }
 
@@ -687,7 +679,7 @@ async function collectCoordinationSignals(
 
   const latestRunContexts = agents.map((agent) => ({
     agent,
-    ...(latestRunContextMap.get(agent.id) ?? { latestRun: null, latestTranscriptEntry: null }),
+    ...(latestRunContextMap.get(agent.id) ?? { latestRun: null, latestTranscriptEntry: null, fullAssistantContent: "" }),
   }));
 
   const agentTitleById = new Map(agents.map((agent) => [agent.id, agent.title]));
@@ -752,7 +744,7 @@ async function collectCoordinationSignals(
     });
   }
 
-  for (const { agent, latestRun, latestTranscriptEntry } of latestRunContexts) {
+  for (const { agent, latestRun, latestTranscriptEntry, fullAssistantContent } of latestRunContexts) {
     if (latestTranscriptEntry?.content?.trim()) {
       const source = latestTranscriptEntry.entryType === "error" ? "error" : "assistant_reply";
       findingSummaries.push({
@@ -826,11 +818,13 @@ async function collectCoordinationSignals(
     }
 
     if (agent.state === "WAITING_INPUT") {
+      // Use the full concatenated assistant output for extraction — not just the last chunk.
+      const fullContent = fullAssistantContent || latestTranscriptEntry?.content || "";
       // Use heuristic as a fast initial summary. The batch LLM synthesis in
       // refreshWorkspaceState will overwrite this with a better message.
       const heuristicAsk =
-        extractActionRequestFromText(latestTranscriptEntry?.content) ??
-        extractLastStatement(latestTranscriptEntry?.content) ??
+        extractActionRequestFromText(fullContent) ??
+        extractLastStatement(fullContent) ??
         `${agent.title} has paused and is waiting for your next instruction.`;
 
       actionRequests.push({
@@ -842,19 +836,18 @@ async function collectCoordinationSignals(
         kind: "needs_input",
         title: `${agent.title} needs input`,
         summary: heuristicAsk,
-        detail:
-          latestTranscriptEntry?.content && latestTranscriptEntry.content.trim() !== heuristicAsk
-            ? truncateText(latestTranscriptEntry.content, 1200)
-            : "The run is paused and waiting for operator guidance.",
+        detail: fullContent && fullContent.trim() !== heuristicAsk
+          ? truncateText(fullContent, 1200)
+          : "The run is paused and waiting for operator guidance.",
         updatedAt: agent.lastEventAt || latestRun?.updatedAt || updatedAt,
       });
 
-      // Record this agent's full output for batch synthesis.
+      // Send the FULL concatenated response to Haiku — not just the last transcript chunk.
       waitingAgentInputs.push({
         agentId: agent.id,
         agentTitle: agent.title,
         agentRole: agentRoleMap.get(agent.id),
-        transcriptContent: latestTranscriptEntry?.content ?? "",
+        transcriptContent: fullContent,
       });
     }
   }
@@ -1390,8 +1383,26 @@ export function createCoordinationService(repositories: Repositories): Coordinat
       // Phase 3: recompute execution plan and blocked agents on every refresh
       const { executionPlan, blockedAgents } = buildExecutionPlan(built, built.agentBriefs);
 
-      // Phase 4: enrich teamAsk with fresh blockedBranches now that we have the execution plan
+      // Carry-forward: if no fresh team ask was generated (agents not currently WAITING_INPUT,
+      // e.g. after a restart that marked them ERROR), preserve the existing persisted ask so
+      // the card stays visible. Only discard it when:
+      //   (a) a new prompt round has started (user already responded), OR
+      //   (b) the operator explicitly dismissed it.
       let teamAsk = built.teamAsk;
+      if (!teamAsk && existingState?.teamAsk && !existingState.teamAsk.dismissed) {
+        const existing = existingState.teamAsk;
+        const currentPromptId = options?.currentPromptId;
+        const newPromptStarted =
+          currentPromptId !== undefined &&
+          currentPromptId !== null &&
+          existing.promptId !== undefined &&
+          existing.promptId !== currentPromptId;
+        if (!newPromptStarted) {
+          teamAsk = existing;
+        }
+      }
+
+      // Phase 4: enrich teamAsk with fresh blockedBranches now that we have the execution plan
       if (teamAsk && blockedAgents.length > 0) {
         const agentTitleById = new Map(built.agentBriefs.map((b) => [b.agentId, b.title]));
         teamAsk = {

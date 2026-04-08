@@ -2098,6 +2098,37 @@ code {
   margin-top: -2px;
 }
 
+.workspace-team-ask-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+
+.workspace-team-ask-agent-error {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 6%, transparent);
+}
+
+.workspace-team-ask-agent-error-msg {
+  color: var(--danger) !important;
+  font-size: 0.85em;
+}
+
+.agent-error-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 0.72em;
+  font-weight: 600;
+  vertical-align: middle;
+  letter-spacing: 0.02em;
+}
+
 .workspace-handoff-card {
   border-style: dashed;
   background: var(--panel-soft);
@@ -3759,6 +3790,24 @@ code {
   color: var(--danger);
   border: 1px solid rgba(224,108,108,0.25);
   margin-left: 6px;
+}
+
+.zoom-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.zoom-btn {
+  padding: 3px 8px !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  min-width: 28px;
+}
+.zoom-reset {
+  padding: 3px 8px !important;
+  font-size: 11px !important;
+  min-width: 44px;
+  font-variant-numeric: tabular-nums;
 }
 
 .synthesis-badge {

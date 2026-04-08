@@ -269,6 +269,18 @@ export async function registerWorkspaceRoutes(app: FastifyInstance): Promise<voi
     };
   });
 
+  app.delete("/workspaces/:id/team-ask", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const workspace = await app.acc.repositories.workspaces.findById(id);
+    if (!workspace) {
+      reply.code(404);
+      return { error: "Workspace not found" };
+    }
+    await app.acc.repositories.coordination.dismissTeamAsk(id);
+    reply.code(204);
+    return null;
+  });
+
   app.get("/workspaces/:id/project-files", async (request, reply) => {
     const params = z.object({ id: z.string() }).parse(request.params);
     const workspace = await app.acc.repositories.workspaces.findById(params.id);

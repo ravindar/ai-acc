@@ -590,3 +590,9 @@ export async function dispatchWorkspaceReply(
     body: JSON.stringify(input),
   });
 }
+
+export async function dismissTeamAsk(workspaceId: string): Promise<void> {
+  return requestJson(`/api/v1/workspaces/${workspaceId}/team-ask`, {
+    method: "DELETE",
+  });
+}
