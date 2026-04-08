@@ -35,7 +35,6 @@ const AUTO_APPROVED_TOOLS = new Set([
   "run_verification_command",
   "create_handoff",
   "list_tools",
-  "spawn_agent",
   "write_memory",
   "read_memory",
   "delete_memory",

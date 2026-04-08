@@ -67,6 +67,8 @@ type PendingApprovalContext = {
   agentId: string;
   workspaceId: string;
   toolCallId: string;
+  /** Tool call IDs from the same batch that were deferred when this approval was gated. */
+  deferredToolCallIds: string[];
   nextIteration: number;
 };
 
@@ -522,12 +524,17 @@ export function createRunOrchestrator(
           createdAt: new Date().toISOString(),
         });
 
+        const deferredToolCallIds = createdToolCalls
+          .filter((_, i) => i !== firstApprovalIdx)
+          .map((tc) => tc.id);
+
         pendingApprovals.set(approval.id, {
           approvalId: approval.id,
           runId,
           agentId,
           workspaceId: lookup.workspace.id,
           toolCallId: approvalToolCall.id,
+          deferredToolCallIds,
           nextIteration: iteration + 1,
         });
         return;
@@ -630,6 +637,8 @@ export function createRunOrchestrator(
 
     const providerCallId = toolCall.providerCallId ?? toolCall.id;
 
+    // Resolve the primary (approval-gated) tool.
+    let primaryResult: AdapterToolResult;
     if (!approved) {
       const deniedCall = await repositories.toolCalls.update(toolCall.id, {
         status: "denied",
@@ -645,53 +654,65 @@ export function createRunOrchestrator(
         agentId: run.agentId,
         entryType: "approval",
         content: `Approval denied for ${toolCall.toolName}.`,
-        metadata: {
-          approvalId: approval.id,
-          decisionMessage,
-        },
+        metadata: { approvalId: approval.id, decisionMessage },
         createdAt: new Date().toISOString(),
       });
       await appendToolFinishedEvent(agent, workspace.id, deniedCall ?? toolCall, {
         status: "denied",
-        output: {
-          denied: true,
-          message: decisionMessage ?? "The operator denied this tool request.",
-        },
+        output: { denied: true, message: decisionMessage ?? "The operator denied this tool request." },
       });
-      await setRunState(run.id, "RUNNING");
-      void continueRun(
-        run.id,
-        run.agentId,
-        {
-          toolResults: [
-            {
-              callId: providerCallId,
-              output: {
-                denied: true,
-                message: decisionMessage ?? "The operator denied this tool request.",
-              },
-              isError: true,
-            },
-          ],
-        },
-        pending.nextIteration,
-      );
-      return;
+      primaryResult = { callId: providerCallId, output: { denied: true, message: decisionMessage ?? "The operator denied this tool request." }, isError: true };
+    } else {
+      await repositories.toolCalls.update(toolCall.id, { status: "approved" });
+      const { persistedToolCall, result } = await executeToolCall(run, agent, workspace, worktree, toolCall);
+      primaryResult = toAdapterToolResult(persistedToolCall.providerCallId ?? providerCallId, result);
     }
 
-    await repositories.toolCalls.update(toolCall.id, {
-      status: "approved",
-    });
-    const { persistedToolCall, result } = await executeToolCall(run, agent, workspace, worktree, toolCall);
+    // Execute any deferred tool calls from the same batch (those not requiring approval run now;
+    // approval-required deferred tools are returned as errors so the model can retry separately).
+    const allToolResults: AdapterToolResult[] = [primaryResult];
+    if (pending.deferredToolCallIds.length > 0) {
+      const deferredCalls = (
+        await Promise.all(pending.deferredToolCallIds.map((id) => repositories.toolCalls.findById(id)))
+      ).filter((tc): tc is ToolCallRecord => tc !== null);
+
+      const autoDeferred = deferredCalls.filter((tc) => !toolBroker.requiresApproval(tc.toolName));
+      const approvalDeferred = deferredCalls.filter((tc) => toolBroker.requiresApproval(tc.toolName));
+
+      if (autoDeferred.length > 0) {
+        logger.info(`[orchestrator] Executing ${autoDeferred.length} deferred auto-approved tool(s) after approval`);
+        const deferredResults = await Promise.allSettled(
+          autoDeferred.map((tc) => executeToolCall(run, agent, workspace, worktree, tc)),
+        );
+        for (let i = 0; i < autoDeferred.length; i++) {
+          const settled = deferredResults[i];
+          const tc = autoDeferred[i]!;
+          if (settled.status === "fulfilled") {
+            const { persistedToolCall, result: toolResult } = settled.value;
+            allToolResults.push(toAdapterToolResult(persistedToolCall.providerCallId ?? tc.providerCallId ?? tc.id, toolResult));
+          } else {
+            const errMsg = settled.reason instanceof Error ? settled.reason.message : "Tool execution failed";
+            const errorResult: ToolExecutionResult = { status: "error", output: { message: errMsg } };
+            await handleToolResult(run, agent, tc, errorResult);
+            allToolResults.push(toAdapterToolResult(tc.providerCallId ?? tc.id, errorResult));
+          }
+        }
+      }
+
+      // Approval-required deferred tools cannot be chained — return an error so the model
+      // knows to re-issue them as a separate call.
+      for (const tc of approvalDeferred) {
+        const errorResult: ToolExecutionResult = {
+          status: "error",
+          output: { message: `Tool "${tc.toolName}" was deferred because another tool in the batch required approval first. Please re-issue it in a separate tool call.` },
+        };
+        await handleToolResult(run, agent, tc, errorResult);
+        allToolResults.push(toAdapterToolResult(tc.providerCallId ?? tc.id, errorResult));
+      }
+    }
+
     await setRunState(run.id, "RUNNING");
-    void continueRun(
-      run.id,
-      run.agentId,
-      {
-        toolResults: [toAdapterToolResult(persistedToolCall.providerCallId ?? providerCallId, result)],
-      },
-      pending.nextIteration,
-    );
+    void continueRun(run.id, run.agentId, { toolResults: allToolResults }, pending.nextIteration);
   }
 
   return {
