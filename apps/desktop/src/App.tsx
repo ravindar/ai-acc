@@ -72,13 +72,14 @@ import {
   dismissTeamAsk,
   updateAgentAutoStart,
   updateAgentCapability,
+  listAgentMemory,
 } from "./lib/api";
 
 type FilterId = "all" | "active" | "idle" | "errors";
 type MenuId = "settings";
 type HomeThreadKind = "workspace" | "planner" | "inbox" | "agent";
 type HomeThread = { kind: HomeThreadKind; agentId?: string };
-type InspectorTab = "session" | "ops" | "meta";
+type InspectorTab = "session" | "ops" | "meta" | "memory";
 type NoticeTone = "info" | "success" | "error";
 type RightSidebarTab = "files" | "terminal" | "artifacts" | "details";
 type SettingsDrawerTab = "providers" | "runtime";
@@ -1831,6 +1832,13 @@ export function App() {
     queryFn: () => fetchAgentArtifacts(selectedAgentId),
     enabled: selectedAgentId.length > 0,
     refetchInterval: 5_000,
+  });
+
+  const agentMemoryQuery = useQuery({
+    queryKey: ["agent-memory", selectedAgentId],
+    queryFn: () => listAgentMemory(selectedAgentId),
+    enabled: selectedAgentId.length > 0,
+    refetchInterval: streamPollMs,
   });
 
   const selectedRunTranscriptQuery = useQuery({
@@ -7460,6 +7468,27 @@ export function App() {
               <span className="compact-note">{selectedRunApprovals.length} approvals</span>
             </div>
           </section>
+
+          <section className="thread-side-card">
+            <div className="dock-subheader">
+              <strong>Memory</strong>
+              <span className="compact-note">{(agentMemoryQuery.data ?? []).length} block{(agentMemoryQuery.data ?? []).length === 1 ? "" : "s"}</span>
+            </div>
+            {agentMemoryQuery.isLoading ? (
+              <p className="menu-muted-copy">Loading…</p>
+            ) : (agentMemoryQuery.data ?? []).length === 0 ? (
+              <p className="menu-muted-copy">No memory blocks yet. Completed runs will generate a summary here.</p>
+            ) : (
+              <dl className="meta-list meta-list-compact">
+                {(agentMemoryQuery.data ?? []).map((block) => (
+                  <div key={block.id}>
+                    <dt style={{fontFamily:"var(--font-mono)", fontSize:"11px"}}>{block.key}</dt>
+                    <dd style={{whiteSpace:"pre-wrap", fontSize:"11px"}}>{block.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            )}
+          </section>
         </div>
       );
     }
@@ -7719,7 +7748,7 @@ export function App() {
       { id: "artifacts", label: "Artifacts" },
     ];
 
-    if (homeThread.kind === "agent") {
+    if (selectedAgentId.length > 0) {
       tabs.push({ id: "details", label: "Agent" });
     }
 

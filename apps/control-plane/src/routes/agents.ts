@@ -356,4 +356,17 @@ export async function registerAgentRoutes(app: FastifyInstance): Promise<void> {
 
     return { agent: updated };
   });
+
+  app.get("/agents/:id/memory", async (request, reply) => {
+    const params = z.object({ id: z.string() }).parse(request.params);
+    const agent = await app.acc.repositories.agents.findById(params.id);
+
+    if (!agent) {
+      reply.code(404);
+      return { error: "Agent not found" };
+    }
+
+    const blocks = await app.acc.repositories.memory.listForAgent(params.id);
+    return { blocks };
+  });
 }

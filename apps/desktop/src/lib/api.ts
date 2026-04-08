@@ -1,4 +1,5 @@
 import type {
+  AgentMemoryBlockRecord,
   ApprovalRequestRecord,
   ArtifactRecord,
   AgentRunRecord,
@@ -448,6 +449,11 @@ export async function updateAgentCapability(agentId: string, capability: "reader
     method: "PATCH",
     body: JSON.stringify({ capability }),
   });
+}
+
+export async function listAgentMemory(agentId: string): Promise<AgentMemoryBlockRecord[]> {
+  const data = await requestJson<{ blocks: AgentMemoryBlockRecord[] }>(`/api/v1/agents/${agentId}/memory`);
+  return data.blocks;
 }
 
 export async function startAgent(agentId: string): Promise<void> {
