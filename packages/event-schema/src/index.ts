@@ -17,6 +17,7 @@ export const agentEventTypeSchema = z.enum([
   "USAGE_TICK",
   "ERROR",
   "SESSION_COMPLETED",
+  "CONTEXT_DROPPED",
 ]);
 
 const agentStateSchema = z.enum([
@@ -83,6 +84,14 @@ export const sessionCompletedPayloadSchema = z.object({
   outcome: z.enum(["completed", "stopped", "error"]),
 });
 
+export const contextDroppedPayloadSchema = z.object({
+  droppedIds: z.array(z.string()),
+  droppedChars: z.number().nonnegative(),
+  remainingChars: z.number().nonnegative(),
+  limitChars: z.number().nonnegative(),
+  utilizationPercent: z.number().nonnegative(),
+});
+
 const payloadSchemaByType = {
   SESSION_STARTED: sessionStartedPayloadSchema,
   STATUS_CHANGED: statusChangedPayloadSchema,
@@ -94,6 +103,7 @@ const payloadSchemaByType = {
   USAGE_TICK: usageTickPayloadSchema,
   ERROR: errorPayloadSchema,
   SESSION_COMPLETED: sessionCompletedPayloadSchema,
+  CONTEXT_DROPPED: contextDroppedPayloadSchema,
 } as const;
 
 export const agentEventSchema = z.object({

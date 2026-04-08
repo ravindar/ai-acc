@@ -7,6 +7,48 @@ export interface ModelInfo extends ModelPricing {
   contextWindow: number;
 }
 
+export interface ModelCapabilities {
+  /** Max input context in tokens. */
+  contextWindow: number;
+  /** Max output tokens per request. */
+  maxOutputTokens: number;
+  /** Whether the model supports prompt caching (Anthropic cache_control). */
+  supportsCache: boolean;
+  /** Whether the model supports structured tool / function calling. */
+  supportsTools: boolean;
+  /** Whether the model accepts image inputs. */
+  supportsVision: boolean;
+}
+
+const MODEL_CAPABILITIES: Record<string, ModelCapabilities> = {
+  // Claude 4.x
+  "claude-opus-4-6":           { contextWindow: 200_000, maxOutputTokens: 32_000, supportsCache: true, supportsTools: true, supportsVision: true },
+  "claude-sonnet-4-6":         { contextWindow: 200_000, maxOutputTokens: 16_000, supportsCache: true, supportsTools: true, supportsVision: true },
+  "claude-haiku-4-5-20251001": { contextWindow: 200_000, maxOutputTokens: 8_000,  supportsCache: true, supportsTools: true, supportsVision: true },
+  "claude-haiku-4-5":          { contextWindow: 200_000, maxOutputTokens: 8_000,  supportsCache: true, supportsTools: true, supportsVision: true },
+  // Claude 3.x
+  "claude-opus-4":             { contextWindow: 200_000, maxOutputTokens: 32_000, supportsCache: true, supportsTools: true, supportsVision: true },
+  "claude-sonnet-4":           { contextWindow: 200_000, maxOutputTokens: 16_000, supportsCache: true, supportsTools: true, supportsVision: true },
+  "claude-3-7-sonnet-20250219":{ contextWindow: 200_000, maxOutputTokens: 16_000, supportsCache: true, supportsTools: true, supportsVision: true },
+  "claude-3-5-sonnet-20241022":{ contextWindow: 200_000, maxOutputTokens: 8_192,  supportsCache: true, supportsTools: true, supportsVision: true },
+  "claude-3-5-sonnet-20240620":{ contextWindow: 200_000, maxOutputTokens: 8_192,  supportsCache: true, supportsTools: true, supportsVision: true },
+  "claude-3-5-haiku-20241022": { contextWindow: 200_000, maxOutputTokens: 8_192,  supportsCache: true, supportsTools: true, supportsVision: true },
+  "claude-3-opus-20240229":    { contextWindow: 200_000, maxOutputTokens: 4_096,  supportsCache: true, supportsTools: true, supportsVision: true },
+  "claude-3-sonnet-20240229":  { contextWindow: 200_000, maxOutputTokens: 4_096,  supportsCache: true, supportsTools: true, supportsVision: true },
+  "claude-3-haiku-20240307":   { contextWindow: 200_000, maxOutputTokens: 4_096,  supportsCache: false, supportsTools: true, supportsVision: true },
+  // GPT / OpenAI
+  "gpt-4.1":       { contextWindow: 128_000, maxOutputTokens: 32_768, supportsCache: false, supportsTools: true, supportsVision: true },
+  "gpt-4.1-mini":  { contextWindow: 128_000, maxOutputTokens: 16_384, supportsCache: false, supportsTools: true, supportsVision: true },
+  "gpt-4o":        { contextWindow: 128_000, maxOutputTokens: 16_384, supportsCache: false, supportsTools: true, supportsVision: true },
+  "gpt-4o-mini":   { contextWindow: 128_000, maxOutputTokens: 16_384, supportsCache: false, supportsTools: true, supportsVision: true },
+  "gpt-4-turbo":   { contextWindow: 128_000, maxOutputTokens: 4_096,  supportsCache: false, supportsTools: true, supportsVision: true },
+  "o1":            { contextWindow: 200_000, maxOutputTokens: 100_000, supportsCache: false, supportsTools: false, supportsVision: false },
+  "o3-mini":       { contextWindow: 200_000, maxOutputTokens: 100_000, supportsCache: false, supportsTools: false, supportsVision: false },
+  // Codex
+  "gpt-5-codex":   { contextWindow: 32_000, maxOutputTokens: 8_192,  supportsCache: false, supportsTools: true, supportsVision: false },
+  "gpt-5.2-codex": { contextWindow: 32_000, maxOutputTokens: 8_192,  supportsCache: false, supportsTools: true, supportsVision: false },
+};
+
 // Baseline hardcoded pricing — always available as fallback
 const BASELINE: Record<string, ModelInfo> = {
   // Claude 4.x models
@@ -125,6 +167,32 @@ export function getPricing(model: string): ModelPricing | null {
 
 export function getContextWindow(model: string, fallback = 32_000): number {
   return lookupModel(model)?.contextWindow ?? fallback;
+}
+
+export function getModelCapabilities(model: string): ModelCapabilities | null {
+  const key = model.trim().toLowerCase();
+
+  // Exact match
+  if (MODEL_CAPABILITIES[key]) return MODEL_CAPABILITIES[key];
+
+  // Prefix match
+  for (const [k, v] of Object.entries(MODEL_CAPABILITIES)) {
+    if (key.startsWith(k)) return v;
+  }
+
+  // Substring match
+  for (const [k, v] of Object.entries(MODEL_CAPABILITIES)) {
+    if (key.includes(k)) return v;
+  }
+
+  // Family fallback using FAMILY_FALLBACK keys
+  for (const { pattern, key: fallbackKey } of FAMILY_FALLBACK) {
+    if (pattern.test(model)) {
+      return MODEL_CAPABILITIES[fallbackKey] ?? null;
+    }
+  }
+
+  return null;
 }
 
 export function getCacheAge(): { updatedAt: number; isBaseline: boolean } {

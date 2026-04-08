@@ -581,6 +581,8 @@ function getFleetActivityToneFromEvent(event: AgentEventRecord): FleetActivityTo
       return "warning";
     case "TOOL_CALL_FINISHED":
       return "info";
+    case "CONTEXT_DROPPED":
+      return "warning";
     case "STATUS_CHANGED": {
       const payload = event.payload as { to?: keyof typeof agentStateMeta };
       return payload.to ? agentStateMeta[payload.to].tone : "info";
@@ -1084,6 +1086,12 @@ function summarizeEvent(event: AgentEventRecord): string {
     }
     case "HEARTBEAT":
       return "Heartbeat received.";
+    case "CONTEXT_DROPPED": {
+      const payload = event.payload as { droppedIds?: string[]; utilizationPercent?: number };
+      const count = payload.droppedIds?.length ?? 0;
+      const pct = payload.utilizationPercent ?? 0;
+      return `Context truncated — ${count} item${count === 1 ? "" : "s"} dropped (context at ${pct}% of limit)`;
+    }
     default:
       return event.type;
   }
@@ -1260,6 +1268,14 @@ function getEventPayloadPreview(event: AgentEventRecord): string | null {
     event.type === "ERROR"
   ) {
     return formatJsonPreview(event.payload);
+  }
+
+  if (event.type === "CONTEXT_DROPPED") {
+    const payload = event.payload as { droppedIds?: string[]; droppedChars?: number; limitChars?: number };
+    const ids = (payload.droppedIds ?? []).map((id) => id.split(":").pop() ?? id);
+    const chars = Number(payload.droppedChars ?? 0).toLocaleString();
+    const limit = Number(payload.limitChars ?? 0).toLocaleString();
+    return `Dropped: ${ids.join(", ")} (${chars} chars removed, limit: ${limit} chars)`;
   }
 
   return null;

@@ -9,7 +9,7 @@ import {
   type SendInputResult,
 } from "@acc/adapter-sdk";
 import { getContextWindow } from "@acc/pricing";
-import type { AgentSessionRecord, AgentState, ContextItemRecord, ProviderId, WorkspaceRecord } from "@acc/shared-types";
+import type { AgentSessionRecord, AgentState, ContextDroppedPayload, ContextItemRecord, ProviderId, WorkspaceRecord } from "@acc/shared-types";
 
 import type { CoordinationService } from "./coordination-state.js";
 import type { EventService } from "./events/service.js";
@@ -28,13 +28,24 @@ function getContextCharLimit(provider: string, model: string): number {
   return PROVIDER_CONTEXT_CHARS[provider] ?? 32_000 * 4;
 }
 
+type TruncateResult = {
+  items: Array<{ id: string; type: ContextItemRecord["type"]; value: string }>;
+  droppedIds: string[];
+  droppedChars: number;
+  totalChars: number;
+  limitChars: number;
+};
+
 function truncateContextItems(
   items: Array<{ id: string; type: ContextItemRecord["type"]; value: string }>,
   charLimit: number,
-): Array<{ id: string; type: ContextItemRecord["type"]; value: string }> {
+): TruncateResult {
   const totalChars = items.reduce((sum, i) => sum + i.value.length, 0);
   const limit = Math.floor(charLimit * 0.8);
-  if (totalChars <= limit) return items;
+
+  if (totalChars <= limit) {
+    return { items, droppedIds: [], droppedChars: 0, totalChars, limitChars: limit };
+  }
 
   // Priority: items with these id suffixes are dropped first (index 0 = lowest priority)
   const DROP_ORDER = [
@@ -53,7 +64,12 @@ function truncateContextItems(
     remaining = remaining.filter((i) => !i.id.endsWith(suffix));
   }
 
-  return remaining;
+  const remainingSet = new Set(remaining.map((i) => i.id));
+  const droppedItems = items.filter((i) => !remainingSet.has(i.id));
+  const droppedIds = droppedItems.map((i) => i.id);
+  const droppedChars = droppedItems.reduce((s, i) => s + i.value.length, 0);
+
+  return { items: remaining, droppedIds, droppedChars, totalChars, limitChars: limit };
 }
 
 type LoggerLike = Pick<Console, "error" | "info" | "warn">;
@@ -142,6 +158,7 @@ async function loadRuntimeContext(
   workspace: WorkspaceRecord | null;
   cwd: string | undefined;
   contextItems: Array<{ id: string; type: ContextItemRecord["type"]; value: string }>;
+  contextDropInfo: ContextDroppedPayload | null;
 }> {
   const [workspace, mountedItems, privateMemory, unreadMessages] = await Promise.all([
     repositories.workspaces.findById(agent.workspaceId),
@@ -245,12 +262,23 @@ async function loadRuntimeContext(
   );
 
   const charLimit = getContextCharLimit(agent.provider, agent.model);
-  const truncatedItems = truncateContextItems(contextItems, charLimit);
+  const truncResult = truncateContextItems(contextItems, charLimit);
+
+  const contextDropInfo: ContextDroppedPayload | null = truncResult.droppedIds.length > 0
+    ? {
+        droppedIds: truncResult.droppedIds,
+        droppedChars: truncResult.droppedChars,
+        remainingChars: truncResult.totalChars - truncResult.droppedChars,
+        limitChars: truncResult.limitChars,
+        utilizationPercent: Math.min(100, Math.round((truncResult.totalChars - truncResult.droppedChars) / truncResult.limitChars * 100)),
+      }
+    : null;
 
   return {
     workspace,
     cwd: cwdFromMetadata(agent) ?? workspace?.projectRoot ?? undefined,
-    contextItems: truncatedItems,
+    contextItems: truncResult.items,
+    contextDropInfo,
   };
 }
 
@@ -430,6 +458,21 @@ export function createRuntimeManager(
       });
 
       await appendStatusChange(handle, "READY", "Live provider session initialized");
+
+      if (runtimeContext.contextDropInfo) {
+        const { droppedIds, droppedChars } = runtimeContext.contextDropInfo;
+        logger.warn(
+          `[runtime] Context truncated for ${agentId}: dropped ${droppedIds.length} item(s), ${droppedChars.toLocaleString()} chars — ${droppedIds.join(", ")}`,
+        );
+        await eventService.append({
+          agentId: agent.id,
+          workspaceId: agent.workspaceId,
+          provider: agent.provider,
+          ts: new Date().toISOString(),
+          type: "CONTEXT_DROPPED",
+          payload: runtimeContext.contextDropInfo,
+        });
+      }
 
       return handle;
     } catch (error) {

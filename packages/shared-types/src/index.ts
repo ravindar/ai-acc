@@ -443,7 +443,8 @@ export type AgentEventType =
   | "HEARTBEAT"
   | "USAGE_TICK"
   | "ERROR"
-  | "SESSION_COMPLETED";
+  | "SESSION_COMPLETED"
+  | "CONTEXT_DROPPED";
 
 export interface SessionStartedPayload {
   sessionId?: string | null;
@@ -496,6 +497,19 @@ export interface SessionCompletedPayload {
   outcome: "completed" | "stopped" | "error";
 }
 
+export interface ContextDroppedPayload {
+  /** IDs of context items that were removed to fit within the limit. */
+  droppedIds: string[];
+  /** Total chars removed across all dropped items. */
+  droppedChars: number;
+  /** Total chars remaining after truncation. */
+  remainingChars: number;
+  /** Effective character limit used (80% of raw model limit). */
+  limitChars: number;
+  /** Percentage of the limit consumed by remaining context (0–100). */
+  utilizationPercent: number;
+}
+
 export type AgentEventPayload =
   | SessionStartedPayload
   | StatusChangedPayload
@@ -505,7 +519,8 @@ export type AgentEventPayload =
   | HeartbeatPayload
   | UsageTickPayload
   | ErrorPayload
-  | SessionCompletedPayload;
+  | SessionCompletedPayload
+  | ContextDroppedPayload;
 
 export interface AgentEventRecord<TPayload = AgentEventPayload> {
   eventId: string;
