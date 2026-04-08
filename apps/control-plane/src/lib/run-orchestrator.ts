@@ -851,15 +851,24 @@ export function createRunOrchestrator(
         }
 
         recovered += 1;
-        await setRunState(active.id, "ERROR", "The embedded control plane restarted while the run was active.");
+
+        // Count how many tool steps completed so the user knows where the run was interrupted.
+        const transcriptEntries = await repositories.transcript.listByRun(active.id);
+        const toolStepCount = transcriptEntries.filter((e) => e.entryType === "tool").length;
+        const stepInfo = toolStepCount > 0
+          ? ` after ${toolStepCount} tool step${toolStepCount === 1 ? "" : "s"}`
+          : "";
+        const errorMsg = `Control plane restarted while this run was active${stepInfo}. Start a new run to continue.`;
+
+        await setRunState(active.id, "ERROR", errorMsg);
         await appendTranscript({
           id: createId("tr"),
           runId: active.id,
           workspaceId: active.workspaceId,
           agentId: active.agentId,
-          entryType: "error",
-          content: "The embedded control plane restarted while the run was active.",
-          metadata: {},
+          entryType: "system",
+          content: `Run interrupted by control-plane restart at tool step ${toolStepCount}/${MAX_TOOL_STEPS}.`,
+          metadata: { toolStepCount, maxToolSteps: MAX_TOOL_STEPS },
           createdAt: new Date().toISOString(),
         });
       }
