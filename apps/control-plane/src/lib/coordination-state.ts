@@ -1406,10 +1406,18 @@ export function createCoordinationService(repositories: Repositories): Coordinat
       // Batch LLM synthesis: send ALL waiting agent outputs in one call.
       // The model reads them together and produces a coherent team summary + per-agent asks.
       // Synthesis is cached per team-ask ID + agent set — only runs once per prompt round.
+      //
+      // STABILIZATION GUARD: do not synthesize while any agent is still RUNNING or STARTING.
+      // Agents often reach WAITING_INPUT at different times; if we synthesize on the first one
+      // we get an incomplete picture and waste a Haiku call. Waiting until the active phase has
+      // settled means synthesis sees the full set of waiting agents in a single pass.
+      const activeAgentStates = new Set(["RUNNING", "STARTING"]);
+      const anyStillRunning = agents.some((a) => activeAgentStates.has(a.state));
+
       let synthesizedTeamSummary: string | null = null;
       let synthesisInputTokens = 0;
       let synthesisOutputTokens = 0;
-      if (waitingAgentInputs.length > 0) {
+      if (waitingAgentInputs.length > 0 && !anyStillRunning) {
         const promptId = options?.currentPromptId ?? existingState?.currentPromptId ?? "default";
         const teamAskId = `coord-team-ask-${workspace.id}-${promptId}`;
         const synthesis = await synthesizeTeamStatus(
