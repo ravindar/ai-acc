@@ -1182,6 +1182,10 @@ export interface Repositories {
     listByRunLimited(runId: string, lastN: number): Promise<TranscriptEntryRecord[]>;
     /** Returns up to `limitPerRun` transcript entries for each run in a single query. */
     listLatestBatchForRuns(runIds: string[], limitPerRun: number): Promise<TranscriptEntryRecord[]>;
+    /** Returns entries with seq > sinceSeq, up to limit, in ascending order. */
+    listByRunSince(runId: string, sinceSeq: number, limit: number): Promise<TranscriptEntryRecord[]>;
+    /** Returns the highest seq number for a run (0 if none). */
+    maxSeq(runId: string): Promise<number>;
     append(entry: Omit<TranscriptEntryRecord, "seq"> & { seq?: number }): Promise<TranscriptEntryRecord>;
   };
   toolCalls: {
@@ -1538,6 +1542,24 @@ export function createRepositories(db: Database): Repositories {
         );
         // Return in ascending order
         return result.rows.reverse().map(mapTranscriptEntry);
+      },
+      async listByRunSince(runId: string, sinceSeq: number, limit: number): Promise<TranscriptEntryRecord[]> {
+        const clampedLimit = Math.min(Math.max(1, limit), 500);
+        const result = await db.query<TranscriptEntryRow>(
+          `select id, run_id, workspace_id, agent_id, seq, entry_type, content, metadata, created_at
+           from transcript_entries
+           where run_id = ? and seq > ?
+           order by seq asc limit ?`,
+          [runId, sinceSeq, clampedLimit],
+        );
+        return result.rows.map(mapTranscriptEntry);
+      },
+      async maxSeq(runId: string): Promise<number> {
+        const result = await db.query<{ max_seq: number | null }>(
+          `select max(seq) as max_seq from transcript_entries where run_id = ?`,
+          [runId],
+        );
+        return result.rows[0]?.max_seq ?? 0;
       },
       async listLatestBatchForRuns(runIds: string[], limitPerRun: number): Promise<TranscriptEntryRecord[]> {
         if (runIds.length === 0) return [];

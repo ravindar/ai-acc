@@ -38,6 +38,7 @@ const AUTO_APPROVED_TOOLS = new Set([
   "read_memory",
   "delete_memory",
   "read_peer_output",
+  "watch_peer_output",
   "send_agent_message",
   "mark_message_read",
   "update_shared_context",
@@ -421,17 +422,35 @@ export function createToolBroker(
         {
           name: "read_peer_output",
           approval: "auto",
-          description: "Read transcript entries and artifacts from a peer agent's run.",
-          argumentsSummary: "{ agentId, runId?, lastN? }",
+          description: "Read transcript entries and artifacts from a peer agent's run. Supply sinceSeq to fetch only new entries since the last read — useful for incremental polling. Returns nextSeq for use in subsequent calls.",
+          argumentsSummary: "{ agentId, runId?, lastN?, sinceSeq? }",
           inputSchema: {
             type: "object",
             additionalProperties: false,
             properties: {
               agentId: { type: "string", description: "The peer agent ID to read output from." },
               runId: { type: "string", description: "Optional: specific run ID. Defaults to the peer's latest run." },
-              lastN: { type: "integer", minimum: 1, maximum: 200, description: "Max transcript entries to return (default 50)." },
+              lastN: { type: "integer", minimum: 1, maximum: 200, description: "Max transcript entries to return when NOT using sinceSeq (default 50)." },
+              sinceSeq: { type: "integer", minimum: 0, description: "Return only entries with seq > this value. Use nextSeq from a previous call to get incremental updates." },
             },
             required: ["agentId"],
+          },
+        },
+        {
+          name: "watch_peer_output",
+          approval: "auto",
+          description: "Wait for new transcript entries from a peer agent (long-poll up to 30 seconds). Returns as soon as new entries arrive after sinceSeq, or with timedOut:true if no activity. Ideal for monitoring a running peer without busy-polling.",
+          argumentsSummary: "{ agentId, sinceSeq, runId?, timeoutMs? }",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              agentId: { type: "string", description: "The peer agent ID to watch." },
+              sinceSeq: { type: "integer", minimum: 0, description: "Wait for entries with seq > this value." },
+              runId: { type: "string", description: "Optional: specific run ID. Defaults to the peer's latest run." },
+              timeoutMs: { type: "integer", minimum: 1000, maximum: 30000, description: "Max wait time in ms (default 10000, max 30000)." },
+            },
+            required: ["agentId", "sinceSeq"],
           },
         },
         {
@@ -960,12 +979,21 @@ export function createToolBroker(
             runId = latestRuns[0]?.id ?? null;
           }
           if (!runId) {
-            return { status: "completed", output: { agentId: peerAgentId, agentTitle: peerAgent.title, runId: null, entries: [], artifacts: [] } };
+            return { status: "completed", output: { agentId: peerAgentId, agentTitle: peerAgent.title, runId: null, entries: [], artifacts: [], nextSeq: 0 } };
           }
-          const lastN = typeof input.lastN === "number" ? Math.min(Math.max(1, input.lastN), 200) : 50;
-          const [entries, artifacts] = await Promise.all([
-            repositories.transcript.listByRunLimited(runId, lastN),
+          const hasSinceSeq = typeof input.sinceSeq === "number";
+          let entries;
+          if (hasSinceSeq) {
+            const sinceSeq = Math.max(0, input.sinceSeq as number);
+            const limit = typeof input.lastN === "number" ? Math.min(Math.max(1, input.lastN), 200) : 100;
+            entries = await repositories.transcript.listByRunSince(runId, sinceSeq, limit);
+          } else {
+            const lastN = typeof input.lastN === "number" ? Math.min(Math.max(1, input.lastN), 200) : 50;
+            entries = await repositories.transcript.listByRunLimited(runId, lastN);
+          }
+          const [artifacts, currentMaxSeq] = await Promise.all([
             repositories.artifacts.listByRun(runId),
+            repositories.transcript.maxSeq(runId),
           ]);
           return {
             status: "completed",
@@ -975,6 +1003,49 @@ export function createToolBroker(
               runId,
               entries: entries.map((e) => ({ seq: e.seq, type: e.entryType, content: e.content.slice(0, 4096), createdAt: e.createdAt })),
               artifacts: artifacts.map((a) => ({ id: a.id, kind: a.kind, uri: a.uri })),
+              nextSeq: currentMaxSeq,
+            },
+          };
+        }
+        case "watch_peer_output": {
+          const peerAgentId = typeof input.agentId === "string" ? input.agentId : "";
+          if (!peerAgentId) throw new Error("watch_peer_output requires agentId.");
+          const sinceSeq = typeof input.sinceSeq === "number" ? Math.max(0, input.sinceSeq) : 0;
+          const peerAgent = await repositories.agents.findById(peerAgentId);
+          if (!peerAgent || peerAgent.workspaceId !== context.run.workspaceId) {
+            throw new Error(`Agent ${peerAgentId} not found in this workspace.`);
+          }
+          let runId = typeof input.runId === "string" ? input.runId : null;
+          if (!runId) {
+            const latestRuns = await repositories.runs.listByAgent(peerAgentId);
+            runId = latestRuns[0]?.id ?? null;
+          }
+          if (!runId) {
+            return { status: "completed", output: { agentId: peerAgentId, agentTitle: peerAgent.title, runId: null, entries: [], timedOut: false, nextSeq: 0 } };
+          }
+          const maxTimeoutMs = Math.min(Math.max(1000, typeof input.timeoutMs === "number" ? input.timeoutMs : 10_000), 30_000);
+          const pollIntervalMs = 2_000;
+          const deadline = Date.now() + maxTimeoutMs;
+          let newEntries: Awaited<ReturnType<typeof repositories.transcript.listByRunSince>> = [];
+          let timedOut = false;
+          // Poll until we get new entries or hit deadline
+          while (true) {
+            newEntries = await repositories.transcript.listByRunSince(runId, sinceSeq, 100);
+            if (newEntries.length > 0) break;
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) { timedOut = true; break; }
+            await new Promise<void>((resolve) => setTimeout(resolve, Math.min(pollIntervalMs, remaining)));
+          }
+          const nextSeq = newEntries.length > 0 ? (newEntries[newEntries.length - 1]?.seq ?? sinceSeq) : await repositories.transcript.maxSeq(runId);
+          return {
+            status: "completed",
+            output: {
+              agentId: peerAgentId,
+              agentTitle: peerAgent.title,
+              runId,
+              entries: newEntries.map((e) => ({ seq: e.seq, type: e.entryType, content: e.content.slice(0, 4096), createdAt: e.createdAt })),
+              timedOut,
+              nextSeq,
             },
           };
         }
